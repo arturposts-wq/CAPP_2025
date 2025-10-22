@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
 *.db
 *.log
 # Byte-compiled / optimized / DLL files
