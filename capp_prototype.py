@@ -1372,7 +1372,7 @@ class CAPPWindow(QMainWindow):
             styles.add(ParagraphStyle(name='CellText', fontName=font_name, fontSize=9, leading=10, alignment=TA_LEFT))
 
             # --- Документ ---
-            doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=20*mm, bottomMargin=20*mm, leftMargin=15*mm, rightMargin=15*mm)
+            pdf_doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=20*mm, bottomMargin=20*mm, leftMargin=15*mm, rightMargin=15*mm)
             story = []
 
             # --- Логотип ---
@@ -1512,7 +1512,7 @@ class CAPPWindow(QMainWindow):
             story.append(Paragraph(f"Дата формирования: {self.process_data['timestamp']}", styles['Footer']))
 
             # --- Генерация с нумерацией ---
-            doc.build(
+            pdf_doc.build(
                 story,
                 onFirstPage=self.add_page_number,
                 onLaterPages=self.add_page_number
