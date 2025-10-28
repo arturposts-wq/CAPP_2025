@@ -1337,7 +1337,7 @@ class CAPPWindow(QMainWindow):
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-    def export_to_pdf(self):
+        def export_to_pdf(self):
         if not hasattr(self, 'process_data'):
             QMessageBox.warning(self, "Ошибка", "Сначала сгенерируйте техпроцесс!")
             return
@@ -1369,8 +1369,8 @@ class CAPPWindow(QMainWindow):
             styles.add(ParagraphStyle(name='Header', fontName=font_name, fontSize=12, leading=14, spaceAfter=8))
             styles.add(ParagraphStyle(name='Footer', fontName=font_name, fontSize=9, alignment=TA_RIGHT))
 
-            # --- Создаём документ ---
-            doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm, leftMargin=15*mm, rightMargin=15*mm)
+            # --- Создаём ДОКУМЕНТ (НЕ СТРОКУ!) ---
+            pdf_doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm, leftMargin=15*mm, rightMargin=15*mm)
             story = []
 
             # --- Заголовок ---
@@ -1496,7 +1496,7 @@ class CAPPWindow(QMainWindow):
             story.append(Paragraph(f"Дата формирования: {self.process_data['timestamp']}", styles['Footer']))
 
             # --- Генерация PDF ---
-            doc.build(story)
+            pdf_doc.build(story)  # ← ИСПРАВЛЕНО: pdf_doc, а не doc
             QMessageBox.information(self, "Успех", f"PDF сохранён:\n{file_path}")
 
         except Exception as e:
