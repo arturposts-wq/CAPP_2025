@@ -1474,94 +1474,185 @@ class CAPPWindow(QMainWindow):
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-    def export_to_pdf(self):
-        if not hasattr(self, 'process_data'):
-            QMessageBox.warning(self, "Ошибка", "Сначала сгенерируйте техпроцесс!")
-            return
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+import os
 
-        file_path = QFileDialog.getSaveFileName(self, "Сохранить PDF",
-                                                f"TechProcess_{self.process_data['model']}_{self.process_data['timestamp'].replace(':', '-')}.pdf",
-                                                "PDF Files (*.pdf)")[0]
-        if not file_path:
-            return
+def export_to_pdf(self):
+    if not hasattr(self, 'process_data'):
+        QMessageBox.warning(self, "Ошибка", "Сначала сгенерируйте техпроцесс!")
+        return
 
-        try:
-            if hasattr(sys, '_MEIPASS'):
-                font_path = os.path.join(sys._MEIPASS, 'DejaVuSans.ttf')
-            else:
-                font_path = os.path.join(os.getcwd(), 'DejaVuSans.ttf')
-            print(f"Попытка загрузки шрифта: {font_path}")
-            if not os.path.exists(font_path):
-                print(f"Ошибка: Файл шрифта {font_path} не найден, используется Helvetica")
-                font = "Helvetica"
-            else:
-                pdfmetrics.registerFont(TTFont('DejaVuSans', font_path))
-                font = 'DejaVuSans'
-                print("Шрифт DejaVuSans успешно зарегистрирован")
+    file_path, _ = QFileDialog.getSaveFileName(
+        self, "Сохранить PDF",
+        f"Техпроцесс_{self.process_data['model']}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+        "PDF Files (*.pdf)"
+    )
+    if not file_path:
+        return
 
-            c = canvas.Canvas(file_path, pagesize=A4)
-            c.setFont(font, 12)
-            y = 280 * mm
+    try:
+        # --- Регистрация шрифта ---
+        font_path = os.path.join(os.path.dirname(__file__), 'fonts', 'DejaVuSans.ttf')
+        if not os.path.exists(font_path):
+            font_path = os.path.join(os.getcwd(), 'DejaVuSans.ttf')
+        if os.path.exists(font_path):
+            pdfmetrics.registerFont(TTFont('DejaVu', font_path))
+            font_name = 'DejaVu'
+        else:
+            font_name = 'Helvetica'
+            print("Шрифт DejaVu не найден, используется Helvetica")
 
-            c.drawString(20 * mm, y, f"Модель: {self.process_data['model']}")
-            y -= 15 * mm
+        # --- Стили ---
+        styles = getSampleStyleSheet()
+        styles.add(ParagraphStyle(name='TitleCenter', fontName=font_name, fontSize=16, alignment=TA_CENTER, spaceAfter=20))
+        styles.add(ParagraphStyle(name='Header', fontName=font_name, fontSize=12, leading=14, spaceAfter=8))
+        styles.add(ParagraphStyle(name='NormalCenter', fontName=font_name, fontSize=10, alignment=TA_CENTER))
+        styles.add(ParagraphStyle(name='Footer', fontName=font_name, fontSize=9, alignment=TA_RIGHT))
 
-            c.drawString(20 * mm, y, "Реквизиты документа:")
-            y -= 10 * mm
-            for _, organization, product_code, document_code, developed_by, checked_by in self.process_data['document_details']:
-                c.drawString(20 * mm, y, f"Организация: {organization}")
-                y -= 10 * mm
-                c.drawString(25 * mm, y, f"Обозначение изделия: {product_code or 'Не указано'}")
-                y -= 10 * mm
-                c.drawString(25 * mm, y, f"Обозначение документа: {document_code or 'Не указано'}")
-                y -= 10 * mm
-                c.drawString(25 * mm, y, f"Разработал: {developed_by or 'Не указано'}")
-                y -= 10 * mm
-                c.drawString(25 * mm, y, f"Проверил: {checked_by or 'Не указано'}")
-                y -= 10 * mm
+        doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm, leftMargin=15*mm, rightMargin=15*mm)
+        story = []
 
-            c.drawString(20 * mm, y, "Расцеховка:")
-            y -= 10 * mm
-            for _, workshop_name, section, rm in self.process_data['workshops']:
-                c.drawString(20 * mm, y, f"Цех: {workshop_name}")
-                y -= 10 * mm
-                c.drawString(25 * mm, y, f"Участок/РМ: {section or ''}/{rm or ''}")
-                y -= 10 * mm
+        # --- Заголовок ---
+        story.append(Paragraph(f"ТЕХНОЛОГИЧЕСКИЙ ПРОЦЕСС", styles['TitleCenter']))
+        story.append(Paragraph(f"Модель: <b>{self.process_data['model']}</b>", styles['TitleCenter']))
+        story.append(Spacer(1, 10*mm))
 
-            c.drawString(20 * mm, y, "Операции:")
-            y -= 10 * mm
-            for _, number, _, name, _, equipment, _, _, _ in self.process_data['operations']:
-                c.drawString(20 * mm, y, f"{number} - {name}")
-                y -= 10 * mm
-                c.drawString(25 * mm, y, f"Оборудование: {equipment or 'Не указано'}")
-                y -= 10 * mm
+        # --- Реквизиты ---
+        details = self.process_data['document_details']
+        if details:
+            data = [["Параметр", "Значение"]]
+            for _, org, prod_code, doc_code, dev_by, check_by in details:
+                data.append(["Организация", org])
+                data.append(["Обозначение изделия", prod_code or "—"])
+                data.append(["Обозначение документа", doc_code or "—"])
+                data.append(["Разработал", dev_by or "—"])
+                data.append(["Проверил", check_by or "—"])
+            table = Table(data, colWidths=[50*mm, 120*mm])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2E7D32')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ('FONTNAME', (0,0), (-1,0), font_name),
+                ('FONTSIZE', (0,0), (-1,0), 11),
+                ('FONTNAME', (0,1), (-1,-1), font_name),
+                ('FONTSIZE', (0,1), (-1,-1), 10),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ('LEFTPADDING', (0,0), (-1,-1), 3),
+                ('TOPPADDING', (0,0), (-1,-1), 3),
+            ]))
+            story.append(Paragraph("Реквизиты документа", styles['Header']))
+            story.append(table)
+            story.append(Spacer(1, 8*mm))
 
-            y -= 10 * mm
-            c.drawString(20 * mm, y, "Спецификация:")
-            y -= 10 * mm
-            for _, name, code, quantity in self.process_data['parts']:
-                c.drawString(20 * mm, y, f"- {name} ({code or 'Не указан'}): {quantity}")
-                y -= 10 * mm
+        # --- Спецификация ---
+        parts = self.process_data['parts']
+        if parts:
+            data = [["№", "Номенклатура", "Код", "Кол-во"]]
+            for i, (_, name, code, qty) in enumerate(parts, 1):
+                data.append([str(i), name, code or "—", str(qty)])
+            col_widths = [15*mm, 80*mm, 40*mm, 25*mm]
+            table = Table(data, colWidths=col_widths)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4CAF50')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+                ('FONTNAME', (0,0), (-1,0), font_name),
+                ('FONTSIZE', (0,0), (-1,0), 11),
+                ('FONTNAME', (0,1), (-1,-1), font_name),
+                ('FONTSIZE', (0,1), (-1,-1), 10),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ('LEFTPADDING', (0,0), (-1,-1), 3),
+                ('TOPPADDING', (0,0), (-1,-1), 3),
+            ]))
+            story.append(Paragraph("Спецификация", styles['Header']))
+            story.append(table)
+            story.append(Spacer(1, 8*mm))
 
-            y -= 10 * mm
-            c.drawString(20 * mm, y, "Оборудование:")
-            y -= 10 * mm
-            for _, name, article, note in self.process_data['equipment']:
-                c.drawString(20 * mm, y, f"- {name} (Артикул: {article or 'Не указан'}, Примечание: {note or 'Не указано'})")
-                y -= 10 * mm
+        # --- Операции ---
+        operations = self.process_data['operations']
+        if operations:
+            data = [["№", "Код", "Наименование", "Оборудование"]]
+            for i, (_, number, code, name, _, equip, _, _, _) in enumerate(operations, 1):
+                data.append([number or str(i), code or "—", name, equip or "—"])
+            col_widths = [20*mm, 30*mm, 80*mm, 50*mm]
+            table = Table(data, colWidths=col_widths)
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2196F3')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('ALIGN', (0,0), (2,-1), 'CENTER'),
+                ('ALIGN', (3,0), (-1,-1), 'LEFT'),
+                ('FONTNAME', (0,0), (-1,0), font_name),
+                ('FONTSIZE', (0,0), (-1,0), 11),
+                ('FONTNAME', (0,1), (-1,-1), font_name),
+                ('FONTSIZE', (0,1), (-1,-1), 10),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ('LEFTPADDING', (0,0), (-1,-1), 3),
+                ('TOPPADDING', (0,0), (-1,-1), 3),
+            ]))
+            story.append(Paragraph("Операции", styles['Header']))
+            story.append(table)
+            story.append(Spacer(1, 8*mm))
 
-            if y < 20 * mm:
-                c.showPage()
-                c.setFont(font, 12)
-                y = 280 * mm
+        # --- Расцеховка ---
+        workshops = self.process_data['workshops']
+        if workshops:
+            data = [["Цех", "Участок", "РМ"]]
+            for _, w, s, r in workshops:
+                data.append([w, s or "—", r or "—"])
+            table = Table(data, colWidths=[60*mm, 60*mm, 60*mm])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#FF9800')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                ('FONTNAME', (0,0), (-1,0), font_name),
+                ('FONTSIZE', (0,0), (-1,0), 11),
+                ('FONTNAME', (0,1), (-1,-1), font_name),
+                ('FONTSIZE', (0,1), (-1,-1), 10),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+            ]))
+            story.append(Paragraph("Расцеховка", styles['Header']))
+            story.append(table)
+            story.append(Spacer(1, 8*mm))
 
-            c.drawString(20 * mm, y, f"Дата: {self.process_data['timestamp']}")
-            c.save()
-            print(f"PDF успешно сохранен: {file_path}")
-            QMessageBox.information(self, "Успех", f"PDF успешно сохранен: {file_path}")
-        except Exception as e:
-            print(f"Ошибка экспорта в PDF: {e}")
-            QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать в PDF: {e}")
+        # --- Оборудование ---
+        equipment = self.process_data['equipment']
+        if equipment:
+            data = [["Наименование", "Артикул", "Примечание"]]
+            for _, name, art, note in equipment:
+                data.append([name, art or "—", note or "—"])
+            table = Table(data, colWidths=[70*mm, 50*mm, 60*mm])
+            table.setStyle(TableStyle([
+                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#9C27B0')),
+                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                ('FONTNAME', (0,0), (-1,0), font_name),
+                ('FONTSIZE', (0,0), (-1,0), 11),
+                ('FONTNAME', (0,1), (-1,-1), font_name),
+                ('FONTSIZE', (0,1), (-1,-1), 10),
+                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+            ]))
+            story.append(Paragraph("Оборудование", styles['Header']))
+            story.append(table)
+
+        # --- Подвал ---
+        story.append(Spacer(1, 15*mm))
+        story.append(Paragraph(f"Дата формирования: {self.process_data['timestamp']}", styles['Footer']))
+
+        # --- Генерация ---
+        doc.build(story)
+        QMessageBox.information(self, "Успех", f"PDF сохранён:\n{file_path}")
+
+    except Exception as e:
+        QMessageBox.critical(self, "Ошибка", f"Не удалось создать PDF:\n{e}")
+        print(traceback.format_exc())
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
