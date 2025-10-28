@@ -1337,7 +1337,7 @@ class CAPPWindow(QMainWindow):
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-    def export_to_pdf(self):
+        def export_to_pdf(self):
         if not hasattr(self, 'process_data'):
             QMessageBox.warning(self, "Ошибка", "Сначала сгенерируйте техпроцесс!")
             return
@@ -1369,8 +1369,15 @@ class CAPPWindow(QMainWindow):
             styles.add(ParagraphStyle(name='Header', fontName=font_name, fontSize=12, leading=14, spaceAfter=8))
             styles.add(ParagraphStyle(name='Footer', fontName=font_name, fontSize=9, alignment=TA_RIGHT))
 
-            # --- Создаём ДОКУМЕНТ (НЕ СТРОКУ!) ---
-            pdf_doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm, leftMargin=15*mm, rightMargin=15*mm)
+            # --- Создаём документ ---
+            pdf_doc = SimpleDocTemplate(
+                file_path,
+                pagesize=A4,
+                topMargin=15*mm,
+                bottomMargin=15*mm,
+                leftMargin=15*mm,
+                rightMargin=15*mm
+            )
             story = []
 
             # --- Заголовок ---
@@ -1379,12 +1386,12 @@ class CAPPWindow(QMainWindow):
             story.append(Spacer(1, 10*mm))
 
             # --- Реквизиты ---
-            details = self.process_data['document_details']
+            details = self.process_data.get('document_details', [])
             if details:
                 data = [["Параметр", "Значение"]]
                 for _, org, prod, doc, dev, check in details:
                     data += [
-                        ["Организация", org],
+                        ["Организация", org or "—"],
                         ["Обозначение изделия", prod or "—"],
                         ["Обозначение документа", doc or "—"],
                         ["Разработал", dev or "—"],
@@ -1408,7 +1415,7 @@ class CAPPWindow(QMainWindow):
                 story.append(Spacer(1, 8*mm))
 
             # --- Спецификация ---
-            parts = self.process_data['parts']
+            parts = self.process_data.get('parts', [])
             if parts:
                 data = [["№", "Номенклатура", "Код", "Кол-во"]]
                 for i, (_, name, code, qty) in enumerate(parts, 1):
@@ -1429,11 +1436,18 @@ class CAPPWindow(QMainWindow):
                 story.append(Spacer(1, 8*mm))
 
             # --- Операции ---
-            operations = self.process_data['operations']
+            operations = self.process_data.get('operations', [])
             if operations:
                 data = [["№", "Код", "Наименование", "Оборудование", "Tподг, ч", "Tшт, мин"]]
                 for i, (_, number, code, name, _, equip, _, prep, unit) in enumerate(operations, 1):
-                    data.append([number or str(i), code or "—", name, equip or "—", f"{prep:.2f}", f"{unit:.2f}"])
+                    data.append([
+                        number or str(i),
+                        code or "—",
+                        name,
+                        equip or "—",
+                        f"{prep:.2f}",
+                        f"{unit:.2f}"
+                    ])
                 table = Table(data, colWidths=[15*mm, 25*mm, 70*mm, 40*mm, 20*mm, 20*mm])
                 table.setStyle(TableStyle([
                     ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2196F3')),
@@ -1451,11 +1465,11 @@ class CAPPWindow(QMainWindow):
                 story.append(Spacer(1, 8*mm))
 
             # --- Расцеховка ---
-            workshops = self.process_data['workshops']
+            workshops = self.process_data.get('workshops', [])
             if workshops:
                 data = [["Цех", "Участок", "РМ"]]
                 for _, w, s, r in workshops:
-                    data.append([w, s or "—", r or "—"])
+                    data.append([w or "—", s or "—", r or "—"])
                 table = Table(data, colWidths=[60*mm, 60*mm, 60*mm])
                 table.setStyle(TableStyle([
                     ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#FF9800')),
@@ -1472,7 +1486,7 @@ class CAPPWindow(QMainWindow):
                 story.append(Spacer(1, 8*mm))
 
             # --- Оборудование ---
-            equipment = self.process_data['equipment']
+            equipment = self.process_data.get('equipment', [])
             if equipment:
                 data = [["Наименование", "Артикул", "Примечание"]]
                 for _, name, art, note in equipment:
@@ -1496,7 +1510,7 @@ class CAPPWindow(QMainWindow):
             story.append(Paragraph(f"Дата формирования: {self.process_data['timestamp']}", styles['Footer']))
 
             # --- Генерация PDF ---
-            pdf_doc.build(story)  # ← ИСПРАВЛЕНО: pdf_doc, а не doc
+            pdf_doc.build(story)
             QMessageBox.information(self, "Успех", f"PDF сохранён:\n{file_path}")
 
         except Exception as e:
