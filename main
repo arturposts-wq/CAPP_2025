@@ -1,0 +1,192 @@
+import sys
+import os
+import sqlite3
+from datetime import datetime
+from PyQt5.QtWidgets import *
+from PyQt5.QtCore import Qt
+from config import TABLE_CONFIG, DETAIL_FIELDS
+from pdf_generator import generate_pdf
+
+class CAPPApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("CAPP Оптимизированный")
+        self.setGeometry(100, 100, 1200, 800)
+
+        self.font_dir = os.path.join(os.path.dirname(__file__), 'fonts')
+        os.makedirs(self.font_dir, exist_ok=True)
+
+        self.init_db()
+        self.init_ui()
+
+    def init_db(self):
+        self.conn = sqlite3.connect('capp.db')
+        c = self.conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS models (id INTEGER PRIMARY KEY, name TEXT UNIQUE)''')
+        for table, cfg in TABLE_CONFIG.items():
+            fields = ", ".join([f"{f} TEXT" if f != "quantity" else f"{f} INTEGER" for f in cfg["fields"]])
+            c.execute(f'''CREATE TABLE IF NOT EXISTS {table} (model_id INTEGER, {fields}, FOREIGN KEY(model_id) REFERENCES models(id))''')
+        c.execute('''CREATE TABLE IF NOT EXISTS document_details (model_id INTEGER, organization TEXT, product_code TEXT, document_code TEXT, developer TEXT, checker TEXT)''')
+        self.conn.commit()
+
+    def init_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+
+        tabs = QTabWidget()
+        layout.addWidget(tabs)
+
+        # --- Модели ---
+        model_tab = QWidget()
+        ml = QVBoxLayout(model_tab)
+        h = QHBoxLayout()
+        h.addWidget(QLabel("Модель:"))
+        self.model_input = QLineEdit()
+        self.model_add = QPushButton("Добавить")
+        self.model_add.clicked.connect(self.add_model)
+        h.addWidget(self.model_input)
+        h.addWidget(self.model_add)
+        ml.addLayout(h)
+        self.model_list = QComboBox()
+        self.model_list.currentTextChanged.connect(self.load_model)
+        ml.addWidget(self.model_list)
+        self.refresh_models()
+        tabs.addTab(model_tab, "Модели")
+
+        # --- Реквизиты ---
+        details_tab = QWidget()
+        dl = QVBoxLayout(details_tab)
+        self.detail_edits = {}
+        for label, key in DETAIL_FIELDS:
+            h = QHBoxLayout()
+            h.addWidget(QLabel(label + ":"))
+            edit = QLineEdit()
+            self.detail_edits[key] = edit
+            h.addWidget(edit)
+            dl.addLayout(h)
+        save_btn = QPushButton("Сохранить реквизиты")
+        save_btn.clicked.connect(self.save_details)
+        dl.addWidget(save_btn)
+        tabs.addTab(details_tab, "Реквизиты")
+
+        # --- Таблицы ---
+        self.tables = {}
+        for key, cfg in TABLE_CONFIG.items():
+            tab = QWidget()
+            tl = QVBoxLayout(tab)
+            table = QTableWidget(0, len(cfg["headers"]) + 1)
+            table.setHorizontalHeaderLabels(cfg["headers"] + ["Действие"])
+            table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            tl.addWidget(table)
+            add_btn = QPushButton(f"Добавить {cfg['title'].lower()}")
+            add_btn.clicked.connect(lambda k=key: self.add_row(k))
+            tl.addWidget(add_btn)
+            tabs.addTab(tab, cfg["title"])
+            self.tables[key] = table
+
+        # --- Кнопки ---
+        btn_layout = QHBoxLayout()
+        gen_btn = QPushButton("Сгенерировать")
+        gen_btn.clicked.connect(self.generate)
+        pdf_btn = QPushButton("PDF")
+        pdf_btn.clicked.connect(self.export_pdf)
+        btn_layout.addWidget(gen_btn)
+        btn_layout.addWidget(pdf_btn)
+        layout.addLayout(btn_layout)
+
+    def refresh_models(self):
+        self.model_list.clear()
+        c = self.conn.cursor()
+        c.execute("SELECT name FROM models")
+        for (n,) in c.fetchall():
+            self.model_list.addItem(n)
+
+    def add_model(self):
+        name = self.model_input.text().strip()
+        if not name: return
+        try:
+            c = self.conn.cursor()
+            c.execute("INSERT INTO models (name) VALUES (?)", (name,))
+            self.conn.commit()
+            self.refresh_models()
+            self.model_list.setCurrentText(name)
+        except: pass
+
+    def load_model(self, name):
+        if not name: return
+        c = self.conn.cursor()
+        c.execute("SELECT id FROM models WHERE name=?", (name,))
+        self.model_id = c.fetchone()[0]
+
+        # Реквизиты
+        c.execute("SELECT * FROM document_details WHERE model_id=?", (self.model_id,))
+        row = c.fetchone()
+        for k, edit in self.detail_edits.items():
+            edit.setText(row[DETAIL_FIELDS.index((None, k)) + 1] if row else "")
+
+        # Таблицы
+        for key, table in self.tables.items():
+            table.setRowCount(0)
+            c.execute(f"SELECT {', '.join(TABLE_CONFIG[key]['fields'])} FROM {key} WHERE model_id=?", (self.model_id,))
+            for row_data in c.fetchall():
+                self.add_row(key, row_data)
+
+    def add_row(self, key, data=None):
+        table = self.tables[key]
+        cfg = TABLE_CONFIG[key]
+        row = table.rowCount()
+        table.insertRow(row)
+        for i, field in enumerate(cfg["fields"]):
+            value = str(data[i]) if data else ""
+            table.setItem(row, i, QTableWidgetItem(value))
+        del_btn = QPushButton("Удалить")
+        del_btn.clicked.connect(lambda: table.removeRow(row))
+        table.setCellWidget(row, len(cfg["fields"]), del_btn)
+
+    def save_details(self):
+        if not hasattr(self, 'model_id'): return
+        c = self.conn.cursor()
+        c.execute("DELETE FROM document_details WHERE model_id=?", (self.model_id,))
+        values = [self.detail_edits[k].text() for _, k in DETAIL_FIELDS]
+        c.execute("INSERT INTO document_details VALUES (?, ?, ?, ?, ?, ?)", (self.model_id, *values))
+        self.conn.commit()
+
+    def generate(self):
+        if not hasattr(self, 'model_id'): return
+        c = self.conn.cursor()
+        c.execute("SELECT name FROM models WHERE id=?", (self.model_id,))
+        model = c.fetchone()[0]
+
+        self.process_data = {
+            'model': model,
+            'timestamp': datetime.now().strftime("%d.%m.%Y %H:%M"),
+            'document_details': [],
+            **{k: [] for k in TABLE_CONFIG.keys()}
+        }
+
+        c.execute("SELECT * FROM document_details WHERE model_id=?", (self.model_id,))
+        row = c.fetchone()
+        if row:
+            self.process_data['document_details'] = [row[1:]]
+
+        for key in TABLE_CONFIG.keys():
+            c.execute(f"SELECT {', '.join(TABLE_CONFIG[key]['fields'])} FROM {key} WHERE model_id=?", (self.model_id,))
+            self.process_data[key] = [dict(zip(TABLE_CONFIG[key]['fields'], row)) for row in c.fetchall()]
+
+        QMessageBox.information(self, "Готово", "Техпроцесс сгенерирован!")
+
+    def export_pdf(self):
+        if not hasattr(self, 'process_data'):
+            QMessageBox.warning(self, "Ошибка", "Сначала сгенерируйте!")
+            return
+        file_path, _ = QFileDialog.getSaveFileName(self, "PDF", f"Техпроцесс_{self.process_data['model']}.pdf", "PDF (*.pdf)")
+        if file_path:
+            generate_pdf(self.process_data, file_path, self.font_dir)
+            QMessageBox.information(self, "Успех", f"PDF сохранён:\n{file_path}")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    win = CAPPApp()
+    win.show()
+    sys.exit(app.exec_())
