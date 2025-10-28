@@ -1351,8 +1351,9 @@ class CAPPWindow(QMainWindow):
             return
 
         try:
-            # --- Регистрация шрифта ---
+            # --- Шрифт ---
             font_dir = os.path.join(os.path.dirname(__file__), 'fonts')
+            os.makedirs(font_dir, exist_ok=True)
             font_path = os.path.join(font_dir, 'DejaVuSans.ttf')
             if not os.path.exists(font_path):
                 font_path = os.path.join(os.getcwd(), 'DejaVuSans.ttf')
@@ -1368,17 +1369,19 @@ class CAPPWindow(QMainWindow):
             styles.add(ParagraphStyle(name='TitleCenter', fontName=font_name, fontSize=16, alignment=TA_CENTER, spaceAfter=20))
             styles.add(ParagraphStyle(name='Header', fontName=font_name, fontSize=12, leading=14, spaceAfter=8))
             styles.add(ParagraphStyle(name='Footer', fontName=font_name, fontSize=9, alignment=TA_RIGHT))
+            styles.add(ParagraphStyle(name='CellText', fontName=font_name, fontSize=9, leading=10, alignment=TA_LEFT))
 
-            # --- Создаём документ ---
-            pdf_doc = SimpleDocTemplate(
-                file_path,
-                pagesize=A4,
-                topMargin=15*mm,
-                bottomMargin=15*mm,
-                leftMargin=15*mm,
-                rightMargin=15*mm
-            )
+            # --- Документ ---
+            doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=20*mm, bottomMargin=20*mm, leftMargin=15*mm, rightMargin=15*mm)
             story = []
+
+            # --- Логотип ---
+            logo_path = os.path.join(os.path.dirname(__file__), 'logo.png')
+            if os.path.exists(logo_path):
+                logo = Image(logo_path, width=50*mm, height=20*mm)
+                logo.hAlign = 'CENTER'
+                story.append(logo)
+                story.append(Spacer(1, 5*mm))
 
             # --- Заголовок ---
             story.append(Paragraph("ТЕХНОЛОГИЧЕСКИЙ ПРОЦЕСС", styles['TitleCenter']))
@@ -1407,8 +1410,6 @@ class CAPPWindow(QMainWindow):
                     ('FONTNAME', (0,1), (-1,-1), font_name),
                     ('FONTSIZE', (0,1), (-1,-1), 10),
                     ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-                    ('LEFTPADDING', (0,0), (-1,-1), 3),
-                    ('TOPPADDING', (0,0), (-1,-1), 3),
                 ]))
                 story.append(Paragraph("Реквизиты документа", styles['Header']))
                 story.append(table)
@@ -1419,16 +1420,18 @@ class CAPPWindow(QMainWindow):
             if parts:
                 data = [["№", "Номенклатура", "Код", "Кол-во"]]
                 for i, (_, name, code, qty) in enumerate(parts, 1):
-                    data.append([str(i), name, code or "—", str(qty)])
-                table = Table(data, colWidths=[15*mm, 80*mm, 40*mm, 25*mm])
+                    name_para = Paragraph(name, styles['CellText']) if len(name) > 30 else name
+                    data.append([str(i), name_para, code or "—", str(qty)])
+                table = Table(data, colWidths=[15*mm, 100*mm, 35*mm, 20*mm], rowHeights=12*mm)
                 table.setStyle(TableStyle([
                     ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4CAF50')),
                     ('TEXTCOLOR', (0,0), (-1,0), colors.white),
                     ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                     ('FONTNAME', (0,0), (-1,0), font_name),
                     ('FONTSIZE', (0,0), (-1,0), 11),
                     ('FONTNAME', (0,1), (-1,-1), font_name),
-                    ('FONTSIZE', (0,1), (-1,-1), 10),
+                    ('FONTSIZE', (0,1), (-1,-1), 9),
                     ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
                 ]))
                 story.append(Paragraph("Спецификация", styles['Header']))
@@ -1440,24 +1443,20 @@ class CAPPWindow(QMainWindow):
             if operations:
                 data = [["№", "Код", "Наименование", "Оборудование", "Tподг, ч", "Tшт, мин"]]
                 for i, (_, number, code, name, _, equip, _, prep, unit) in enumerate(operations, 1):
-                    data.append([
-                        number or str(i),
-                        code or "—",
-                        name,
-                        equip or "—",
-                        f"{prep:.2f}",
-                        f"{unit:.2f}"
-                    ])
-                table = Table(data, colWidths=[15*mm, 25*mm, 70*mm, 40*mm, 20*mm, 20*mm])
+                    name_para = Paragraph(name, styles['CellText']) if len(name) > 25 else name
+                    equip_para = Paragraph(equip, styles['CellText']) if equip and len(equip) > 20 else (equip or "—")
+                    data.append([number or str(i), code or "—", name_para, equip_para, f"{prep:.2f}", f"{unit:.2f}"])
+                table = Table(data, colWidths=[15*mm, 25*mm, 60*mm, 50*mm, 20*mm, 20*mm], rowHeights=14*mm)
                 table.setStyle(TableStyle([
                     ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2196F3')),
                     ('TEXTCOLOR', (0,0), (-1,0), colors.white),
                     ('ALIGN', (0,0), (3,-1), 'CENTER'),
                     ('ALIGN', (4,0), (-1,-1), 'CENTER'),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                     ('FONTNAME', (0,0), (-1,0), font_name),
                     ('FONTSIZE', (0,0), (-1,0), 11),
                     ('FONTNAME', (0,1), (-1,-1), font_name),
-                    ('FONTSIZE', (0,1), (-1,-1), 10),
+                    ('FONTSIZE', (0,1), (-1,-1), 9),
                     ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
                 ]))
                 story.append(Paragraph("Операции", styles['Header']))
@@ -1490,16 +1489,19 @@ class CAPPWindow(QMainWindow):
             if equipment:
                 data = [["Наименование", "Артикул", "Примечание"]]
                 for _, name, art, note in equipment:
-                    data.append([name, art or "—", note or "—"])
-                table = Table(data, colWidths=[70*mm, 50*mm, 60*mm])
+                    name_para = Paragraph(name, styles['CellText']) if len(name) > 30 else name
+                    note_para = Paragraph(note, styles['CellText']) if note and len(note) > 30 else (note or "—")
+                    data.append([name_para, art or "—", note_para])
+                table = Table(data, colWidths=[70*mm, 50*mm, 60*mm], rowHeights=12*mm)
                 table.setStyle(TableStyle([
                     ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#9C27B0')),
                     ('TEXTCOLOR', (0,0), (-1,0), colors.white),
                     ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                    ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
                     ('FONTNAME', (0,0), (-1,0), font_name),
                     ('FONTSIZE', (0,0), (-1,0), 11),
                     ('FONTNAME', (0,1), (-1,-1), font_name),
-                    ('FONTSIZE', (0,1), (-1,-1), 10),
+                    ('FONTSIZE', (0,1), (-1,-1), 9),
                     ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
                 ]))
                 story.append(Paragraph("Оборудование", styles['Header']))
@@ -1509,13 +1511,23 @@ class CAPPWindow(QMainWindow):
             story.append(Spacer(1, 15*mm))
             story.append(Paragraph(f"Дата формирования: {self.process_data['timestamp']}", styles['Footer']))
 
-            # --- Генерация PDF ---
-            pdf_doc.build(story)
+            # --- Генерация с нумерацией ---
+            doc.build(
+                story,
+                onFirstPage=self.add_page_number,
+                onLaterPages=self.add_page_number
+            )
             QMessageBox.information(self, "Успех", f"PDF сохранён:\n{file_path}")
 
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось создать PDF:\n{e}")
             print(traceback.format_exc())
+
+    def add_page_number(self, canvas, doc):
+        page_num = canvas.getPageNumber()
+        text = f"Страница {page_num}"
+        canvas.setFont("DejaVu", 9)
+        canvas.drawRightString(195*mm, 10*mm, text)
 
 
 if __name__ == '__main__':
