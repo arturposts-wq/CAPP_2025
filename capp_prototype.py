@@ -1337,7 +1337,7 @@ class CAPPWindow(QMainWindow):
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-        def export_to_pdf(self):
+    def export_to_pdf(self):
         if not hasattr(self, 'process_data'):
             QMessageBox.warning(self, "Ошибка", "Сначала сгенерируйте техпроцесс!")
             return
