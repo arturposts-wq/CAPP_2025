@@ -3,19 +3,22 @@ import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QLabel, QComboBox, QPushButton, QTableWidget, QTableWidgetItem, 
                              QFileDialog, QMessageBox, QDialog, QFormLayout, QTabWidget, 
-                             QInputDialog, QLineEdit, QSpinBox, QSpacerItem, QSizePolicy, 
+                             QInputDialog, QLineEdit, QDoubleSpinBox, QSpacerItem, QSizePolicy, 
                              QGroupBox, QScrollArea, QFrame)
 from PyQt5.QtCore import Qt
 import sqlite3
 from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
+from reportlab.lib import colors
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from datetime import datetime
 import openpyxl
 import traceback
+
 
 class CAPPDatabase:
     def __init__(self, db_name="capp.db"):
@@ -55,8 +58,8 @@ class CAPPDatabase:
                 description TEXT,
                 equipment TEXT,
                 document TEXT,
-                prep_time REAL,
-                unit_time REAL,
+                prep_time REAL DEFAULT 0.0,
+                unit_time REAL DEFAULT 0.0,
                 FOREIGN KEY (model_id) REFERENCES models(id)
             )
         ''')
@@ -109,10 +112,12 @@ class CAPPDatabase:
             print(f"Ошибка вставки детали: {e}")
             return None
 
-    def insert_operation(self, model_id, number, code, name, description):
+    def insert_operation(self, model_id, number, code, name, description, equipment="", prep_time=0.0, unit_time=0.0):
         try:
-            self.cursor.execute("INSERT INTO operations (model_id, number, code, name, description, equipment, document, prep_time, unit_time) VALUES (?, ?, ?, ?, ?, NULL, NULL, 0.0, 0.0)",
-                               (model_id, number, code, name, description))
+            self.cursor.execute("""
+                INSERT INTO operations (model_id, number, code, name, description, equipment, prep_time, unit_time)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (model_id, number, code, name, description, equipment, prep_time, unit_time))
             self.conn.commit()
             return self.cursor.lastrowid
         except sqlite3.Error as e:
@@ -167,10 +172,12 @@ class CAPPDatabase:
             print(f"Ошибка обновления детали: {e}")
             return False
 
-    def update_operation(self, id, number, code, name, description):
+    def update_operation(self, id, number, code, name, description, equipment="", prep_time=0.0, unit_time=0.0):
         try:
-            self.cursor.execute("UPDATE operations SET number = ?, code = ?, name = ?, description = ? WHERE id = ?",
-                               (number, code, name, description, id))
+            self.cursor.execute("""
+                UPDATE operations SET number = ?, code = ?, name = ?, description = ?, equipment = ?, prep_time = ?, unit_time = ?
+                WHERE id = ?
+            """, (number, code, name, description, equipment, prep_time, unit_time, id))
             self.conn.commit()
             return self.cursor.rowcount > 0
         except sqlite3.Error as e:
@@ -341,7 +348,7 @@ class CAPPDatabase:
                                 model_id = self.get_model_id(current_model)
                                 if model_id:
                                     self.insert_part(model_id, name, code, quantity)
-                                    imported = True
+                                    imported = true
                 else:
                     print("Ошибка: В листе 'Лист1' отсутствуют колонки: №, Номенклатура, Количество")
             else:
@@ -354,13 +361,14 @@ class CAPPDatabase:
     def close(self):
         self.conn.close()
 
+
 class OperationDialog(QDialog):
     def __init__(self, parent=None, is_edit_db=False, db=None):
         super().__init__(parent)
         self.is_edit_db = is_edit_db
         self.db = db
         self.setWindowTitle("Добавить операцию")
-        self.setGeometry(200, 200, 400, 150 if is_edit_db else 200)
+        self.setGeometry(200, 200, 450, 250 if is_edit_db else 350)
         layout = QFormLayout()
 
         if not is_edit_db:
@@ -380,6 +388,25 @@ class OperationDialog(QDialog):
         if not is_edit_db:
             self.description_input = QLineEdit(self)
             layout.addRow("Описание:", self.description_input)
+
+            self.equipment_combo = QComboBox(self)
+            self.equipment_combo.addItem("")
+            if db:
+                for _, name, _, _ in db.get_equipment():
+                    self.equipment_combo.addItem(name)
+            layout.addRow("Оборудование:", self.equipment_combo)
+
+            self.prep_time_input = QDoubleSpinBox(self)
+            self.prep_time_input.setRange(0.0, 999.9)
+            self.prep_time_input.setDecimals(2)
+            self.prep_time_input.setSuffix(" ч")
+            layout.addRow("Время подготовки:", self.prep_time_input)
+
+            self.unit_time_input = QDoubleSpinBox(self)
+            self.unit_time_input.setRange(0.0, 999.9)
+            self.unit_time_input.setDecimals(2)
+            self.unit_time_input.setSuffix(" мин")
+            layout.addRow("Штучное время:", self.unit_time_input)
 
         buttons = QHBoxLayout()
         ok_button = QPushButton("ОК", self)
@@ -430,7 +457,16 @@ class OperationDialog(QDialog):
         if self.is_edit_db:
             return (self.code_combo.currentText(), self.name_combo.currentText())
         else:
-            return (self.number_input.text(), self.code_combo.currentText(), self.name_combo.currentText(), self.description_input.text())
+            return (
+                self.number_input.text(),
+                self.code_combo.currentText(),
+                self.name_combo.currentText(),
+                self.description_input.text(),
+                self.equipment_combo.currentText(),
+                self.prep_time_input.value(),
+                self.unit_time_input.value()
+            )
+
 
 class WorkshopDialog(QDialog):
     def __init__(self, parent=None):
@@ -464,6 +500,7 @@ class WorkshopDialog(QDialog):
     def get_values(self):
         return self.workshop_input.text(), self.section_input.text(), self.rm_input.text()
 
+
 class EquipmentDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -495,6 +532,7 @@ class EquipmentDialog(QDialog):
 
     def get_values(self):
         return self.name_input.text(), self.article_input.text(), self.note_input.text()
+
 
 class DocumentDetailsDialog(QDialog):
     def __init__(self, parent=None):
@@ -535,6 +573,7 @@ class DocumentDetailsDialog(QDialog):
         return (self.organization_input.text(), self.product_code_input.text(), 
                 self.document_code_input.text(), self.developed_by_input.text(), 
                 self.checked_by_input.text())
+
 
 class EditDBDialog(QDialog):
     def __init__(self, db, parent=None):
@@ -673,11 +712,11 @@ class EditDBDialog(QDialog):
         if dialog.exec_() == QDialog.Accepted:
             code, name = dialog.get_values()
             if name:
-                if self.db.insert_operation(None, "", code, name, ""):
-                    self.update_operations_table()
-                    QMessageBox.information(self, "Успех", f"'{name}' добавлено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось добавить!")
+                # Добавление в справочник операций
+                self.db.cursor.execute("INSERT OR IGNORE INTO operations (model_id, code, name) VALUES (NULL, ?, ?)", (code, name))
+                self.db.conn.commit()
+                self.update_operations_table()
+                QMessageBox.information(self, "Успех", f"Операция '{name}' добавлена в справочник!")
             else:
                 QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Наименование'!")
 
@@ -692,12 +731,11 @@ class EditDBDialog(QDialog):
             if dialog.exec_() == QDialog.Accepted:
                 code, name = dialog.get_values()
                 if name:
-                    operation_id = self.operations_table.item(row, 0).data(Qt.UserRole)
-                    if self.db.update_operation(operation_id, "", code, name, ""):
-                        self.update_operations_table()
-                        QMessageBox.information(self, "Успех", "Обновлено!")
-                    else:
-                        QMessageBox.critical(self, "Ошибка", "Не удалось обновить!")
+                    op_id = self.operations_table.item(row, 0).data(Qt.UserRole)
+                    self.db.cursor.execute("UPDATE operations SET code = ?, name = ? WHERE id = ?", (code, name, op_id))
+                    self.db.conn.commit()
+                    self.update_operations_table()
+                    QMessageBox.information(self, "Успех", "Операция обновлена!")
                 else:
                     QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Наименование'!")
 
@@ -705,73 +743,61 @@ class EditDBDialog(QDialog):
         row = self.operations_table.currentRow()
         if row >= 0:
             name = self.operations_table.item(row, 1).text()
-            reply = QMessageBox.question(self, "Подтверждение", f"Удалить '{name}'?", QMessageBox.Yes | QMessageBox.No)
+            reply = QMessageBox.question(self, "Подтверждение", f"Удалить операцию '{name}' из справочника?", QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
-                operation_id = self.operations_table.item(row, 0).data(Qt.UserRole)
-                if self.db.delete_operation(operation_id):
-                    self.update_operations_table()
-                    QMessageBox.information(self, "Успех", f"'{name}' удалено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось удалить!")
+                op_id = self.operations_table.item(row, 0).data(Qt.UserRole)
+                self.db.delete_operation(op_id)
+                self.update_operations_table()
+                QMessageBox.information(self, "Успех", "Операция удалена!")
 
     def add_workshop(self):
         dialog = WorkshopDialog(self)
         if dialog.exec_() == QDialog.Accepted:
             workshop_name, section, rm = dialog.get_values()
             if workshop_name:
-                if self.db.insert_workshop(workshop_name, section, rm):
-                    self.update_workshop_table()
-                    QMessageBox.information(self, "Успех", f"'{workshop_name}' добавлено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось добавить!")
+                self.db.insert_workshop(workshop_name, section, rm)
+                self.update_workshop_table()
+                QMessageBox.information(self, "Успех", f"Цех '{workshop_name}' добавлен!")
             else:
                 QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Цех'!")
 
     def edit_workshop(self):
         row = self.workshop_table.currentRow()
         if row >= 0:
-            old_workshop = self.workshop_table.item(row, 0).text()
-            old_section = self.workshop_table.item(row, 1).text()
-            old_rm = self.workshop_table.item(row, 2).text()
+            old_name = self.workshop_table.item(row, 0).text()
             dialog = WorkshopDialog(self)
-            dialog.workshop_input.setText(old_workshop)
-            dialog.section_input.setText(old_section)
-            dialog.rm_input.setText(old_rm)
+            dialog.workshop_input.setText(old_name)
+            dialog.section_input.setText(self.workshop_table.item(row, 1).text())
+            dialog.rm_input.setText(self.workshop_table.item(row, 2).text())
             if dialog.exec_() == QDialog.Accepted:
                 workshop_name, section, rm = dialog.get_values()
                 if workshop_name:
-                    workshop_id = self.workshop_table.item(row, 0).data(Qt.UserRole)
-                    if self.db.update_workshop(workshop_id, workshop_name, section, rm):
-                        self.update_workshop_table()
-                        QMessageBox.information(self, "Успех", "Обновлено!")
-                    else:
-                        QMessageBox.critical(self, "Ошибка", "Не удалось обновить!")
+                    ws_id = self.workshop_table.item(row, 0).data(Qt.UserRole)
+                    self.db.update_workshop(ws_id, workshop_name, section, rm)
+                    self.update_workshop_table()
+                    QMessageBox.information(self, "Успех", "Данные обновлены!")
                 else:
                     QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Цех'!")
 
     def delete_workshop(self):
         row = self.workshop_table.currentRow()
         if row >= 0:
-            workshop_name = self.workshop_table.item(row, 0).text()
-            reply = QMessageBox.question(self, "Подтверждение", f"Удалить '{workshop_name}'?", QMessageBox.Yes | QMessageBox.No)
+            name = self.workshop_table.item(row, 0).text()
+            reply = QMessageBox.question(self, "Подтверждение", f"Удалить '{name}'?", QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
-                workshop_id = self.workshop_table.item(row, 0).data(Qt.UserRole)
-                if self.db.delete_workshop(workshop_id):
-                    self.update_workshop_table()
-                    QMessageBox.information(self, "Успех", f"'{workshop_name}' удалено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось удалить!")
+                ws_id = self.workshop_table.item(row, 0).data(Qt.UserRole)
+                self.db.delete_workshop(ws_id)
+                self.update_workshop_table()
+                QMessageBox.information(self, "Успех", "Удалено!")
 
     def add_equipment(self):
         dialog = EquipmentDialog(self)
         if dialog.exec_() == QDialog.Accepted:
             name, article, note = dialog.get_values()
             if name:
-                if self.db.insert_equipment(name, article, note):
-                    self.update_equipment_table()
-                    QMessageBox.information(self, "Успех", f"'{name}' добавлено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось добавить!")
+                self.db.insert_equipment(name, article, note)
+                self.update_equipment_table()
+                QMessageBox.information(self, "Успех", f"Оборудование '{name}' добавлено!")
             else:
                 QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Наименование'!")
 
@@ -779,21 +805,17 @@ class EditDBDialog(QDialog):
         row = self.equipment_table.currentRow()
         if row >= 0:
             old_name = self.equipment_table.item(row, 0).text()
-            old_article = self.equipment_table.item(row, 1).text()
-            old_note = self.equipment_table.item(row, 2).text()
             dialog = EquipmentDialog(self)
             dialog.name_input.setText(old_name)
-            dialog.article_input.setText(old_article)
-            dialog.note_input.setText(old_note)
+            dialog.article_input.setText(self.equipment_table.item(row, 1).text())
+            dialog.note_input.setText(self.equipment_table.item(row, 2).text())
             if dialog.exec_() == QDialog.Accepted:
                 name, article, note = dialog.get_values()
                 if name:
-                    equipment_id = self.equipment_table.item(row, 0).data(Qt.UserRole)
-                    if self.db.update_equipment(equipment_id, name, article, note):
-                        self.update_equipment_table()
-                        QMessageBox.information(self, "Успех", "Обновлено!")
-                    else:
-                        QMessageBox.critical(self, "Ошибка", "Не удалось обновить!")
+                    eq_id = self.equipment_table.item(row, 0).data(Qt.UserRole)
+                    self.db.update_equipment(eq_id, name, article, note)
+                    self.update_equipment_table()
+                    QMessageBox.information(self, "Успех", "Оборудование обновлено!")
                 else:
                     QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Наименование'!")
 
@@ -803,27 +825,35 @@ class EditDBDialog(QDialog):
             name = self.equipment_table.item(row, 0).text()
             reply = QMessageBox.question(self, "Подтверждение", f"Удалить '{name}'?", QMessageBox.Yes | QMessageBox.No)
             if reply == QMessageBox.Yes:
-                equipment_id = self.equipment_table.item(row, 0).data(Qt.UserRole)
-                if self.db.delete_equipment(equipment_id):
-                    self.update_equipment_table()
-                    QMessageBox.information(self, "Успех", f"'{name}' удалено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось удалить!")
+                eq_id = self.equipment_table.item(row, 0).data(Qt.UserRole)
+                self.db.delete_equipment(eq_id)
+                self.update_equipment_table()
+                QMessageBox.information(self, "Успех", "Удалено!")
+
 
 class EditTPDialog(QDialog):
     def __init__(self, db, parent=None):
         super().__init__(parent)
         self.db = db
         self.setWindowTitle("Редактировать ТП")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 1000, 700)
         layout = QVBoxLayout()
+
+        top_layout = QHBoxLayout()
+        model_label = QLabel("Модель:")
+        self.model_combo = QComboBox()
+        self.model_combo.addItems([name for _, name in db.get_models()])
+        top_layout.addWidget(model_label)
+        top_layout.addWidget(self.model_combo)
+
+        add_model_btn = QPushButton("Добавить")
+        add_model_btn.clicked.connect(self.add_model)
+        top_layout.addWidget(add_model_btn)
+
+        layout.addLayout(top_layout)
 
         self.tab_widget = QTabWidget()
         layout.addWidget(self.tab_widget)
-
-        self.models_tab = QWidget()
-        self.tab_widget.addTab(self.models_tab, "Модели")
-        self.setup_models_tab()
 
         self.parts_tab = QWidget()
         self.tab_widget.addTab(self.parts_tab, "Спецификация")
@@ -834,16 +864,12 @@ class EditTPDialog(QDialog):
         self.setup_operations_tab()
 
         self.document_details_tab = QWidget()
-        self.tab_widget.addTab(self.document_details_tab, "Реквизиты документа")
+        self.tab_widget.addTab(self.document_details_tab, "Реквизиты")
         self.setup_document_details_tab()
 
-        self.update_model_combo()
+        self.model_combo.currentTextChanged.connect(self.load_model_data)
 
         buttons = QHBoxLayout()
-        import_button = QPushButton("Импорт из Excel")
-        import_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #2196F3; color: white; border-radius: 5px;")
-        import_button.clicked.connect(self.import_from_excel)
-        buttons.addWidget(import_button)
         close_button = QPushButton("Закрыть")
         close_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #FF9800; color: white; border-radius: 5px;")
         close_button.clicked.connect(self.accept)
@@ -851,227 +877,127 @@ class EditTPDialog(QDialog):
         layout.addLayout(buttons)
         self.setLayout(layout)
 
-    def setup_models_tab(self):
-        layout = QVBoxLayout()
-        self.models_table = QTableWidget()
-        self.models_table.setColumnCount(1)
-        self.models_table.setHorizontalHeaderLabels(['Название'])
-        self.models_table.horizontalHeader().setStretchLastSection(True)
-        self.models_table.setStyleSheet("font-size: 14px; color: #333;")
-        layout.addWidget(self.models_table)
-        buttons = QHBoxLayout()
-        add_button = QPushButton("Добавить модель")
-        add_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #4CAF50; color: white; border-radius: 5px;")
-        add_button.clicked.connect(self.add_model)
-        buttons.addWidget(add_button)
-        edit_button = QPushButton("Редактировать модель")
-        edit_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #2196F3; color: white; border-radius: 5px;")
-        edit_button.clicked.connect(self.edit_model)
-        buttons.addWidget(edit_button)
-        delete_button = QPushButton("Удалить модель")
-        delete_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #F44336; color: white; border-radius: 5px;")
-        delete_button.clicked.connect(self.delete_model)
-        buttons.addWidget(delete_button)
-        layout.addLayout(buttons)
-        self.models_tab.setLayout(layout)
-        self.update_models_table()
+        if self.model_combo.count() > 0:
+            self.load_model_data(self.model_combo.currentText())
 
     def setup_parts_tab(self):
         layout = QVBoxLayout()
-        self.parts_model_combo = QComboBox()
-        self.parts_model_combo.setStyleSheet("font-size: 14px; padding: 5px;")
-        layout.addWidget(self.parts_model_combo)
-        self.parts_model_combo.currentTextChanged.connect(self.update_parts_table)
         self.parts_table = QTableWidget()
-        self.parts_table.setColumnCount(3)
-        self.parts_table.setHorizontalHeaderLabels(['Номер', 'Номенклатура', 'Количество'])
-        self.parts_table.horizontalHeader().setStretchLastSection(True)
-        self.parts_table.setStyleSheet("font-size: 14px; color: #333;")
+        self.parts_table.setColumnCount(4)
+        self.parts_table.setHorizontalHeaderLabels(['ID', 'Номер', 'Номенклатура', 'Кол-во'])
+        self.parts_table.hideColumn(0)
         layout.addWidget(self.parts_table)
+
         buttons = QHBoxLayout()
-        add_button = QPushButton("Добавить")
-        add_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #4CAF50; color: white; border-radius: 5px;")
-        add_button.clicked.connect(self.add_part)
-        buttons.addWidget(add_button)
-        edit_button = QPushButton("Редактировать")
-        edit_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #2196F3; color: white; border-radius: 5px;")
-        edit_button.clicked.connect(self.edit_part)
-        buttons.addWidget(edit_button)
-        delete_button = QPushButton("Удалить")
-        delete_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #F44336; color: white; border-radius: 5px;")
-        delete_button.clicked.connect(self.delete_part)
-        buttons.addWidget(delete_button)
+        add_btn = QPushButton("Добавить")
+        add_btn.clicked.connect(self.add_part)
+        buttons.addWidget(add_btn)
+        edit_btn = QPushButton("Редактировать")
+        edit_btn.clicked.connect(self.edit_part)
+        buttons.addWidget(edit_btn)
+        delete_btn = QPushButton("Удалить")
+        delete_btn.clicked.connect(self.delete_part)
+        buttons.addWidget(delete_btn)
         layout.addLayout(buttons)
         self.parts_tab.setLayout(layout)
-        self.update_parts_table(self.parts_model_combo.currentText())
 
     def setup_operations_tab(self):
         layout = QVBoxLayout()
-        self.operations_model_combo = QComboBox()
-        self.operations_model_combo.setStyleSheet("font-size: 14px; padding: 5px;")
-        layout.addWidget(self.operations_model_combo)
-        self.operations_model_combo.currentTextChanged.connect(self.update_operations_table)
         self.operations_table = QTableWidget()
-        self.operations_table.setColumnCount(4)
-        self.operations_table.setHorizontalHeaderLabels(['Номер', 'Код', 'Наименование', 'Описание'])
-        self.operations_table.horizontalHeader().setStretchLastSection(True)
-        self.operations_table.setStyleSheet("font-size: 14px; color: #333;")
+        self.operations_table.setColumnCount(8)
+        self.operations_table.setHorizontalHeaderLabels(['ID', '№', 'Код', 'Наименование', 'Описание', 'Оборудование', 'Tподг, ч', 'Tшт, мин'])
+        self.operations_table.hideColumn(0)
         layout.addWidget(self.operations_table)
+
         buttons = QHBoxLayout()
-        add_button = QPushButton("Добавить")
-        add_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #4CAF50; color: white; border-radius: 5px;")
-        add_button.clicked.connect(self.add_operation)
-        buttons.addWidget(add_button)
-        edit_button = QPushButton("Редактировать")
-        edit_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #2196F3; color: white; border-radius: 5px;")
-        edit_button.clicked.connect(self.edit_operation)
-        buttons.addWidget(edit_button)
-        delete_button = QPushButton("Удалить")
-        delete_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #F44336; color: white; border-radius: 5px;")
-        delete_button.clicked.connect(self.delete_operation)
-        buttons.addWidget(delete_button)
+        add_btn = QPushButton("Добавить")
+        add_btn.clicked.connect(self.add_operation)
+        buttons.addWidget(add_btn)
+        edit_btn = QPushButton("Редактировать")
+        edit_btn.clicked.connect(self.edit_operation)
+        buttons.addWidget(edit_btn)
+        delete_btn = QPushButton("Удалить")
+        delete_btn.clicked.connect(self.delete_operation)
+        buttons.addWidget(delete_btn)
         layout.addLayout(buttons)
         self.operations_tab.setLayout(layout)
-        self.update_operations_table(self.operations_model_combo.currentText())
 
     def setup_document_details_tab(self):
         layout = QVBoxLayout()
-        self.document_details_model_combo = QComboBox()
-        self.document_details_model_combo.setStyleSheet("font-size: 14px; padding: 5px;")
-        layout.addWidget(self.document_details_model_combo)
-        self.document_details_model_combo.currentTextChanged.connect(self.update_document_details_table)
         self.document_details_table = QTableWidget()
-        self.document_details_table.setColumnCount(5)
-        self.document_details_table.setHorizontalHeaderLabels(['Организация', 'Обозначение изделия', 'Обозначение документа', 'Разработал', 'Проверил'])
-        self.document_details_table.horizontalHeader().setStretchLastSection(True)
-        self.document_details_table.setStyleSheet("font-size: 14px; color: #333;")
+        self.document_details_table.setColumnCount(6)
+        self.document_details_table.setHorizontalHeaderLabels(['ID', 'Организация', 'Изделие', 'Документ', 'Разработал', 'Проверил'])
+        self.document_details_table.hideColumn(0)
         layout.addWidget(self.document_details_table)
+
         buttons = QHBoxLayout()
-        add_button = QPushButton("Добавить")
-        add_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #4CAF50; color: white; border-radius: 5px;")
-        add_button.clicked.connect(self.add_document_details)
-        buttons.addWidget(add_button)
-        edit_button = QPushButton("Редактировать")
-        edit_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #2196F3; color: white; border-radius: 5px;")
-        edit_button.clicked.connect(self.edit_document_details)
-        buttons.addWidget(edit_button)
-        delete_button = QPushButton("Удалить")
-        delete_button.setStyleSheet("font-size: 14px; padding: 8px; background-color: #F44336; color: white; border-radius: 5px;")
-        delete_button.clicked.connect(self.delete_document_details)
-        buttons.addWidget(delete_button)
+        add_btn = QPushButton("Добавить")
+        add_btn.clicked.connect(self.add_document_details)
+        buttons.addWidget(add_btn)
+        edit_btn = QPushButton("Редактировать")
+        edit_btn.clicked.connect(self.edit_document_details)
+        buttons.addWidget(edit_btn)
+        delete_btn = QPushButton("Удалить")
+        delete_btn.clicked.connect(self.delete_document_details)
+        buttons.addWidget(delete_btn)
         layout.addLayout(buttons)
         self.document_details_tab.setLayout(layout)
-        self.update_document_details_table(self.document_details_model_combo.currentText())
 
-    def update_model_combo(self):
-        models = [name for _, name in self.db.get_models()]
-        for combo in [self.parts_model_combo, self.operations_model_combo, self.document_details_model_combo]:
-            combo.clear()
-            combo.addItems(models)
-
-    def import_from_excel(self):
-        current_model = self.parts_model_combo.currentText()
-        if not current_model or not self.db.get_model_id(current_model):
-            QMessageBox.warning(self, "Предупреждение", "Сначала добавьте модель в разделе 'Модели'!")
-            return
-        file_path = QFileDialog.getOpenFileName(self, "Открыть Excel файл", "", "Excel Files (*.xlsx *.xls)")[0]
-        if file_path:
-            if self.db.import_from_excel(file_path, current_model):
-                self.update_parts_table(current_model)
-                QMessageBox.information(self, "Успех", "Данные импортированы в Спецификацию!")
-            else:
-                QMessageBox.critical(self, "Ошибка", "Не удалось импортировать данные из Excel. Проверьте консоль для деталей.")
-
-    def update_models_table(self):
-        models = self.db.get_models()
-        self.models_table.setRowCount(len(models))
-        for row, (id, name) in enumerate(models):
-            item = QTableWidgetItem(name)
-            item.setData(Qt.UserRole, id)
-            self.models_table.setItem(row, 0, item)
-
-    def update_parts_table(self, model_name):
+    def load_model_data(self, model_name):
         model_id = self.db.get_model_id(model_name)
-        parts = self.db.get_parts(model_id) if model_id else []
+        if not model_id:
+            return
+
+        # Спецификация
+        parts = self.db.get_parts(model_id)
         self.parts_table.setRowCount(len(parts))
-        for row, (id, name, code, quantity) in enumerate(parts):
-            self.parts_table.setItem(row, 0, QTableWidgetItem(code or ""))
-            self.parts_table.setItem(row, 1, QTableWidgetItem(name))
-            self.parts_table.setItem(row, 2, QTableWidgetItem(str(quantity)))
+        for row, (id, name, code, qty) in enumerate(parts):
+            self.parts_table.setItem(row, 0, QTableWidgetItem(str(id)))
+            self.parts_table.setItem(row, 1, QTableWidgetItem(code or ""))
+            self.parts_table.setItem(row, 2, QTableWidgetItem(name))
+            self.parts_table.setItem(row, 3, QTableWidgetItem(str(qty)))
             self.parts_table.item(row, 0).setData(Qt.UserRole, id)
 
-    def update_operations_table(self, model_name):
-        model_id = self.db.get_model_id(model_name)
-        operations = self.db.get_operations(model_id) if model_id else []
+        # Операции
+        operations = self.db.get_operations(model_id)
         self.operations_table.setRowCount(len(operations))
-        for row, (id, number, code, name, description, _, _, _, _) in enumerate(operations):
-            self.operations_table.setItem(row, 0, QTableWidgetItem(number or ""))
-            self.operations_table.setItem(row, 1, QTableWidgetItem(code or ""))
-            self.operations_table.setItem(row, 2, QTableWidgetItem(name))
-            self.operations_table.setItem(row, 3, QTableWidgetItem(description or ""))
+        for row, (id, number, code, name, desc, equip, _, prep, unit) in enumerate(operations):
+            self.operations_table.setItem(row, 0, QTableWidgetItem(str(id)))
+            self.operations_table.setItem(row, 1, QTableWidgetItem(number or ""))
+            self.operations_table.setItem(row, 2, QTableWidgetItem(code or ""))
+            self.operations_table.setItem(row, 3, QTableWidgetItem(name))
+            self.operations_table.setItem(row, 4, QTableWidgetItem(desc or ""))
+            self.operations_table.setItem(row, 5, QTableWidgetItem(equip or ""))
+            self.operations_table.setItem(row, 6, QTableWidgetItem(f"{prep:.2f}"))
+            self.operations_table.setItem(row, 7, QTableWidgetItem(f"{unit:.2f}"))
             self.operations_table.item(row, 0).setData(Qt.UserRole, id)
 
-    def update_document_details_table(self, model_name):
-        model_id = self.db.get_model_id(model_name)
-        details = self.db.get_document_details(model_id) if model_id else []
+        # Реквизиты
+        details = self.db.get_document_details(model_id)
         self.document_details_table.setRowCount(len(details))
-        for row, (id, organization, product_code, document_code, developed_by, checked_by) in enumerate(details):
-            self.document_details_table.setItem(row, 0, QTableWidgetItem(organization))
-            self.document_details_table.setItem(row, 1, QTableWidgetItem(product_code or ""))
-            self.document_details_table.setItem(row, 2, QTableWidgetItem(document_code or ""))
-            self.document_details_table.setItem(row, 3, QTableWidgetItem(developed_by or ""))
-            self.document_details_table.setItem(row, 4, QTableWidgetItem(checked_by or ""))
+        for row, (id, org, prod, doc, dev, check) in enumerate(details):
+            self.document_details_table.setItem(row, 0, QTableWidgetItem(str(id)))
+            self.document_details_table.setItem(row, 1, QTableWidgetItem(org))
+            self.document_details_table.setItem(row, 2, QTableWidgetItem(prod or ""))
+            self.document_details_table.setItem(row, 3, QTableWidgetItem(doc or ""))
+            self.document_details_table.setItem(row, 4, QTableWidgetItem(dev or ""))
+            self.document_details_table.setItem(row, 5, QTableWidgetItem(check or ""))
             self.document_details_table.item(row, 0).setData(Qt.UserRole, id)
 
     def add_model(self):
         name, ok = QInputDialog.getText(self, "Добавить модель", "Название модели:")
         if ok and name:
             if self.db.insert_model(name):
-                self.update_models_table()
-                self.update_model_combo()
-                if self.parent():
-                    self.parent().update_model_combo()
+                self.model_cert_combo.addItem(name)
+                self.model_combo.setCurrentText(name)
                 QMessageBox.information(self, "Успех", f"Модель '{name}' добавлена!")
             else:
-                QMessageBox.critical(self, "Ошибка", "Не удалось добавить модель! Возможно, модель с таким именем уже существует.")
-
-    def edit_model(self):
-        row = self.models_table.currentRow()
-        if row >= 0:
-            old_name = self.models_table.item(row, 0).text()
-            name, ok = QInputDialog.getText(self, "Редактировать модель", "Название модели:", text=old_name)
-            if ok and name:
-                model_id = self.models_table.item(row, 0).data(Qt.UserRole)
-                if self.db.update_model(model_id, name):
-                    self.update_models_table()
-                    self.update_model_combo()
-                    if self.parent():
-                        self.parent().update_model_combo()
-                    QMessageBox.information(self, "Успех", f"Модель '{name}' обновлена!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось обновить модель!")
-
-    def delete_model(self):
-        row = self.models_table.currentRow()
-        if row >= 0:
-            name = self.models_table.item(row, 0).text()
-            reply = QMessageBox.question(self, "Подтверждение", f"Удалить модель '{name}'?", QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                model_id = self.models_table.item(row, 0).data(Qt.UserRole)
-                if self.db.delete_model(model_id):
-                    self.update_models_table()
-                    self.update_model_combo()
-                    if self.parent():
-                        self.parent().update_model_combo()
-                    QMessageBox.information(self, "Успех", f"Модель '{name}' удалена!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось удалить модель!")
+                QMessageBox.critical(self, "Ошибка", "Модель уже существует!")
 
     def add_part(self):
-        model_name = self.parts_model_combo.currentText()
+        model_name = self.model_combo.currentText()
         model_id = self.db.get_model_id(model_name)
         if not model_id:
-            QMessageBox.critical(self, "Ошибка", "Выберите модель!")
             return
         name, ok = QInputDialog.getText(self, "Добавить деталь", "Название:")
         if ok and name:
@@ -1079,170 +1005,112 @@ class EditTPDialog(QDialog):
             if ok:
                 quantity, ok = QInputDialog.getInt(self, "Добавить деталь", "Количество:", min=1)
                 if ok:
-                    if self.db.insert_part(model_id, name, code, quantity):
-                        self.update_parts_table(model_name)
-                        QMessageBox.information(self, "Успех", f"'{name}' добавлено!")
-                    else:
-                        QMessageBox.critical(self, "Ошибка", "Не удалось добавить!")
+                    self.db.insert_part(model_id, name, code, quantity)
+                    self.load_model_data(model_name)
 
     def edit_part(self):
         row = self.parts_table.currentRow()
         if row >= 0:
-            old_name = self.parts_table.item(row, 1).text()
-            name, ok = QInputDialog.getText(self, "Редактировать деталь", "Название:", text=old_name)
+            part_id = self.parts_table.item(row, 0).data(Qt.UserRole)
+            name = self.parts_table.item(row, 2).text()
+            code = self.parts_table.item(row, 1).text()
+            qty = int(self.parts_table.item(row, 3).text())
+            new_name, ok = QInputDialog.getText(self, "Редактировать", "Название:", text=name)
             if ok:
-                code, ok = QInputDialog.getText(self, "Редактировать деталь", "Код:", text=self.parts_table.item(row, 0).text())
+                new_code, ok = QInputDialog.getText(self, "Редактировать", "Код:", text=code)
                 if ok:
-                    quantity, ok = QInputDialog.getInt(self, "Редактировать деталь", "Количество:", value=int(self.parts_table.item(row, 2).text()), min=1)
+                    new_qty, ok = QInputDialog.getInt(self, "Редактировать", "Количество:", value=qty, min=1)
                     if ok:
-                        part_id = self.parts_table.item(row, 0).data(Qt.UserRole)
-                        if self.db.update_part(part_id, name, code, quantity):
-                            self.update_parts_table(self.parts_model_combo.currentText())
-                            QMessageBox.information(self, "Успех", "Обновлено!")
-                        else:
-                            QMessageBox.critical(self, "Ошибка", "Не удалось обновить!")
+                        self.db.update_part(part_id, new_name, new_code, new_qty)
+                        self.load_model_data(self.model_combo.currentText())
 
     def delete_part(self):
         row = self.parts_table.currentRow()
         if row >= 0:
-            name = self.parts_table.item(row, 1).text()
-            reply = QMessageBox.question(self, "Подтверждение", f"Удалить '{name}'?", QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                part_id = self.parts_table.item(row, 0).data(Qt.UserRole)
-                if self.db.delete_part(part_id):
-                    self.update_parts_table(self.parts_model_combo.currentText())
-                    QMessageBox.information(self, "Успех", f"'{name}' удалено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось удалить!")
+            part_id = self.parts_table.item(row, 0).data(Qt.UserRole)
+            self.db.delete_part(part_id)
+            self.load_model_data(self.model_combo.currentText())
 
     def add_operation(self):
-        model_name = self.operations_model_combo.currentText()
+        model_name = self.model_combo.currentText()
         model_id = self.db.get_model_id(model_name)
         if not model_id:
-            QMessageBox.critical(self, "Ошибка", "Выберите модель!")
             return
         dialog = OperationDialog(self, is_edit_db=False, db=self.db)
         if dialog.exec_() == QDialog.Accepted:
-            number, code, name, description = dialog.get_values()
+            number, code, name, desc, equip, prep, unit = dialog.get_values()
             if name:
-                if self.db.insert_operation(model_id, number, code, name, description):
-                    self.update_operations_table(model_name)
-                    QMessageBox.information(self, "Успех", f"'{name}' добавлено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось добавить!")
-            else:
-                QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Наименование'!")
+                self.db.insert_operation(model_id, number, code, name, desc, equip, prep, unit)
+                self.load_model_data(model_name)
 
     def edit_operation(self):
         row = self.operations_table.currentRow()
         if row >= 0:
-            old_number = self.operations_table.item(row, 0).text()
-            old_code = self.operations_table.item(row, 1).text()
-            old_name = self.operations_table.item(row, 2).text()
-            old_description = self.operations_table.item(row, 3).text()
+            op_id = self.operations_table.item(row, 0).data(Qt.UserRole)
             dialog = OperationDialog(self, is_edit_db=False, db=self.db)
-            dialog.number_input.setText(old_number)
-            dialog.code_combo.setCurrentText(old_code)
-            dialog.name_combo.setCurrentText(old_name)
-            dialog.description_input.setText(old_description)
+            dialog.number_input.setText(self.operations_table.item(row, 1).text())
+            dialog.code_combo.setCurrentText(self.operations_table.item(row, 2).text())
+            dialog.name_combo.setCurrentText(self.operations_table.item(row, 3).text())
+            dialog.description_input.setText(self.operations_table.item(row, 4).text())
+            dialog.equipment_combo.setCurrentText(self.operations_table.item(row, 5).text())
+            dialog.prep_time_input.setValue(float(self.operations_table.item(row, 6).text() or 0))
+            dialog.unit_time_input.setValue(float(self.operations_table.item(row, 7).text() or 0))
             if dialog.exec_() == QDialog.Accepted:
-                number, code, name, description = dialog.get_values()
+                number, code, name, desc, equip, prep, unit = dialog.get_values()
                 if name:
-                    operation_id = self.operations_table.item(row, 0).data(Qt.UserRole)
-                    if self.db.update_operation(operation_id, number, code, name, description):
-                        self.update_operations_table(self.operations_model_combo.currentText())
-                        QMessageBox.information(self, "Успех", "Обновлено!")
-                    else:
-                        QMessageBox.critical(self, "Ошибка", "Не удалось обновить!")
-                else:
-                    QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Наименование'!")
+                    self.db.update_operation(op_id, number, code, name, desc, equip, prep, unit)
+                    self.load_model_data(self.model_combo.currentText())
 
     def delete_operation(self):
         row = self.operations_table.currentRow()
         if row >= 0:
-            name = self.operations_table.item(row, 2).text()
-            reply = QMessageBox.question(self, "Подтверждение", f"Удалить '{name}'?", QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                operation_id = self.operations_table.item(row, 0).data(Qt.UserRole)
-                if self.db.delete_operation(operation_id):
-                    self.update_operations_table(self.operations_model_combo.currentText())
-                    QMessageBox.information(self, "Успех", f"'{name}' удалено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось удалить!")
+            op_id = self.operations_table.item(row, 0).data(Qt.UserRole)
+            self.db.delete_operation(op_id)
+            self.load_model_data(self.model_combo.currentText())
 
     def add_document_details(self):
-        model_name = self.document_details_model_combo.currentText()
+        model_name = self.model_combo.currentText()
         model_id = self.db.get_model_id(model_name)
         if not model_id:
-            QMessageBox.critical(self, "Ошибка", "Выберите модель!")
             return
         dialog = DocumentDetailsDialog(self)
         if dialog.exec_() == QDialog.Accepted:
-            organization, product_code, document_code, developed_by, checked_by = dialog.get_values()
-            if organization:
-                if self.db.insert_document_details(model_id, organization, product_code, document_code, developed_by, checked_by):
-                    self.update_document_details_table(model_name)
-                    QMessageBox.information(self, "Успех", f"'{organization}' добавлено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось добавить!")
-            else:
-                QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Организация'!")
+            org, prod, doc, dev, check = dialog.get_values()
+            if org:
+                self.db.insert_document_details(model_id, org, prod, doc, dev, check)
+                self.load_model_data(model_name)
 
     def edit_document_details(self):
         row = self.document_details_table.currentRow()
         if row >= 0:
-            old_organization = self.document_details_table.item(row, 0).text()
-            old_product_code = self.document_details_table.item(row, 1).text()
-            old_document_code = self.document_details_table.item(row, 2).text()
-            old_developed_by = self.document_details_table.item(row, 3).text()
-            old_checked_by = self.document_details_table.item(row, 4).text()
+            det_id = self.document_details_table.item(row, 0).data(Qt.UserRole)
             dialog = DocumentDetailsDialog(self)
-            dialog.organization_input.setText(old_organization)
-            dialog.product_code_input.setText(old_product_code)
-            dialog.document_code_input.setText(old_document_code)
-            dialog.developed_by_input.setText(old_developed_by)
-            dialog.checked_by_input.setText(old_checked_by)
+            dialog.organization_input.setText(self.document_details_table.item(row, 1).text())
+            dialog.product_code_input.setText(self.document_details_table.item(row, 2).text())
+            dialog.document_code_input.setText(self.document_details_table.item(row, 3).text())
+            dialog.developed_by_input.setText(self.document_details_table.item(row, 4).text())
+            dialog.checked_by_input.setText(self.document_details_table.item(row, 5).text())
             if dialog.exec_() == QDialog.Accepted:
-                organization, product_code, document_code, developed_by, checked_by = dialog.get_values()
-                if organization:
-                    details_id = self.document_details_table.item(row, 0).data(Qt.UserRole)
-                    if self.db.update_document_details(details_id, organization, product_code, document_code, developed_by, checked_by):
-                        self.update_document_details_table(self.document_details_model_combo.currentText())
-                        QMessageBox.information(self, "Успех", "Обновлено!")
-                    else:
-                        QMessageBox.critical(self, "Ошибка", "Не удалось обновить!")
-                else:
-                    QMessageBox.warning(self, "Предупреждение", "Заполните поле 'Организация'!")
+                org, prod, doc, dev, check = dialog.get_values()
+                if org:
+                    self.db.update_document_details(det_id, org, prod, doc, dev, check)
+                    self.load_model_data(self.model_combo.currentText())
 
     def delete_document_details(self):
         row = self.document_details_table.currentRow()
         if row >= 0:
-            organization = self.document_details_table.item(row, 0).text()
-            reply = QMessageBox.question(self, "Подтверждение", f"Удалить '{organization}'?", QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
-                details_id = self.document_details_table.item(row, 0).data(Qt.UserRole)
-                if self.db.delete_document_details(details_id):
-                    self.update_document_details_table(self.document_details_model_combo.currentText())
-                    QMessageBox.information(self, "Успех", f"'{organization}' удалено!")
-                else:
-                    QMessageBox.critical(self, "Ошибка", "Не удалось удалить!")
+            det_id = self.document_details_table.item(row, 0).data(Qt.UserRole)
+            self.db.delete_document_details(det_id)
+            self.load_model_data(self.model_combo.currentText())
+
 
 class CAPPWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.db = CAPPDatabase()
         self.setWindowTitle("CAPP Prototype")
-        self.setGeometry(100, 100, 800, 600)
-        try:
-            self.init_ui()
-            self.init_data()
-        except Exception as e:
-            print(f"Ошибка инициализации приложения: {e}")
-            traceback.print_exc()
-            self.close()
-
-    def init_data(self):
-        pass
+        self.setGeometry(100, 100, 900, 700)
+        self.init_ui()
 
     def init_ui(self):
         central_widget = QWidget()
@@ -1251,27 +1119,27 @@ class CAPPWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        # Кнопки в верхней части
+        # Кнопки
         button_layout = QHBoxLayout()
-        generate_btn = QPushButton("Сгенерировать техпроцесс", central_widget)
+        generate_btn = QPushButton("Сгенерировать техпроцесс")
         generate_btn.setStyleSheet("font-size: 14px; background-color: #808080; color: white; border-radius: 5px;")
         generate_btn.setFixedSize(200, 40)
         generate_btn.clicked.connect(self.generate_process)
         button_layout.addWidget(generate_btn)
 
-        edit_db_btn = QPushButton("Редактировать БД", central_widget)
+        edit_db_btn = QPushButton("Редактировать БД")
         edit_db_btn.setStyleSheet("font-size: 14px; background-color: #808080; color: white; border-radius: 5px;")
         edit_db_btn.setFixedSize(200, 40)
         edit_db_btn.clicked.connect(self.edit_db)
         button_layout.addWidget(edit_db_btn)
 
-        edit_tp_btn = QPushButton("Ред. ТП", central_widget)
+        edit_tp_btn = QPushButton("Ред. ТП")
         edit_tp_btn.setStyleSheet("font-size: 14px; background-color: #808080; color: white; border-radius: 5px;")
         edit_tp_btn.setFixedSize(200, 40)
         edit_tp_btn.clicked.connect(self.edit_tp)
         button_layout.addWidget(edit_tp_btn)
 
-        export_btn = QPushButton("Экспортировать в PDF", central_widget)
+        export_btn = QPushButton("Экспортировать в PDF")
         export_btn.setStyleSheet("font-size: 14px; background-color: #808080; color: white; border-radius: 5px;")
         export_btn.setFixedSize(200, 40)
         export_btn.clicked.connect(self.export_to_pdf)
@@ -1282,27 +1150,24 @@ class CAPPWindow(QMainWindow):
 
         # Выбор модели
         input_layout = QHBoxLayout()
-        model_label = QLabel("Модель:", central_widget)
+        model_label = QLabel("Модель:")
         model_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
         model_label.setFixedWidth(100)
         input_layout.addWidget(model_label)
-        self.model_combo = QComboBox(central_widget)
+        self.model_combo = QComboBox()
         self.model_combo.setStyleSheet("font-size: 14px; padding: 5px;")
         input_layout.addWidget(self.model_combo)
-        input_layout.addSpacerItem(QSpacerItem(20, 0, QSizePolicy.Expanding, QSizePolicy.Minimum))
         self.update_model_combo()
         layout.addLayout(input_layout)
 
-        # Разделитель
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
 
-        # Группа для модели
+        # Модель
         model_group = QGroupBox("Модель")
         model_group.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; color: #2E7D32; }")
-        model_group.setFlat(False)
         model_layout = QVBoxLayout()
         self.model_label = QLabel("")
         self.model_label.setStyleSheet("font-size: 14px; padding: 5px; color: #333;")
@@ -1310,10 +1175,9 @@ class CAPPWindow(QMainWindow):
         model_group.setLayout(model_layout)
         layout.addWidget(model_group)
 
-        # Группа для спецификации
+        # Спецификация
         parts_group = QGroupBox("Спецификация")
         parts_group.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; color: #2E7D32; }")
-        parts_group.setFlat(False)
         parts_group.setCheckable(True)
         parts_group.setChecked(True)
         parts_layout = QVBoxLayout()
@@ -1329,22 +1193,20 @@ class CAPPWindow(QMainWindow):
         parts_group.setLayout(parts_layout)
         layout.addWidget(parts_group)
 
-        # Разделитель
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
 
-        # Группа для операций
+        # Операции
         operations_group = QGroupBox("Операции")
         operations_group.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; color: #2E7D32; }")
-        operations_group.setFlat(False)
         operations_group.setCheckable(True)
         operations_group.setChecked(True)
         operations_layout = QVBoxLayout()
         self.operations_table = QTableWidget()
-        self.operations_table.setColumnCount(4)
-        self.operations_table.setHorizontalHeaderLabels(['Номер', 'Код', 'Наименование', 'Оборудование'])
+        self.operations_table.setColumnCount(6)
+        self.operations_table.setHorizontalHeaderLabels(['№', 'Код', 'Наименование', 'Оборудование', 'Tподг, ч', 'Tшт, мин'])
         self.operations_table.horizontalHeader().setStretchLastSection(True)
         self.operations_table.setStyleSheet("font-size: 14px; color: #333;")
         operations_scroll = QScrollArea()
@@ -1354,16 +1216,14 @@ class CAPPWindow(QMainWindow):
         operations_group.setLayout(operations_layout)
         layout.addWidget(operations_group)
 
-        # Разделитель
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
 
-        # Группа для расцеховки
+        # Расцеховка
         workshop_group = QGroupBox("Расцеховка")
         workshop_group.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; color: #2E7D32; }")
-        workshop_group.setFlat(False)
         workshop_group.setCheckable(True)
         workshop_group.setChecked(True)
         workshop_layout = QVBoxLayout()
@@ -1379,16 +1239,14 @@ class CAPPWindow(QMainWindow):
         workshop_group.setLayout(workshop_layout)
         layout.addWidget(workshop_group)
 
-        # Разделитель
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
 
-        # Группа для оборудования
+        # Оборудование
         equipment_group = QGroupBox("Оборудование")
         equipment_group.setStyleSheet("QGroupBox { font-size: 16px; font-weight: bold; color: #2E7D32; }")
-        equipment_group.setFlat(False)
         equipment_group.setCheckable(True)
         equipment_group.setChecked(True)
         equipment_layout = QVBoxLayout()
@@ -1404,7 +1262,6 @@ class CAPPWindow(QMainWindow):
         equipment_group.setLayout(equipment_layout)
         layout.addWidget(equipment_group)
 
-        # Добавляем растягивающийся разделитель
         layout.addSpacerItem(QSpacerItem(20, 40, QSizePolicy.Minimum, QSizePolicy.Expanding))
 
     def update_model_combo(self):
@@ -1428,7 +1285,7 @@ class CAPPWindow(QMainWindow):
 
         model_id = self.db.get_model_id(model)
         if not model_id:
-            QMessageBox.critical(self, "Ошибка", f"Модель {model} не найдена в базе данных!")
+            QMessageBox.critical(self, "Ошибка", f"Модель {model} не найдена!")
             return
 
         parts = self.db.get_parts(model_id)
@@ -1439,29 +1296,35 @@ class CAPPWindow(QMainWindow):
 
         self.model_label.setText(f"Модель: {model}")
 
+        # Спецификация
         self.parts_table.setRowCount(len(parts))
-        for row, (id, name, code, quantity) in enumerate(parts):
+        for row, (id, name, code, qty) in enumerate(parts):
             self.parts_table.setItem(row, 0, QTableWidgetItem(code or ""))
             self.parts_table.setItem(row, 1, QTableWidgetItem(name))
-            self.parts_table.setItem(row, 2, QTableWidgetItem(str(quantity)))
+            self.parts_table.setItem(row, 2, QTableWidgetItem(str(qty)))
 
+        # Операции
         self.operations_table.setRowCount(len(operations))
-        for row, (id, number, code, name, _, equipment_name, _, _, _) in enumerate(operations):
+        for row, (id, number, code, name, _, equip, _, prep, unit) in enumerate(operations):
             self.operations_table.setItem(row, 0, QTableWidgetItem(number or ""))
             self.operations_table.setItem(row, 1, QTableWidgetItem(code or ""))
             self.operations_table.setItem(row, 2, QTableWidgetItem(name))
-            self.operations_table.setItem(row, 3, QTableWidgetItem(equipment_name or ""))
+            self.operations_table.setItem(row, 3, QTableWidgetItem(equip or ""))
+            self.operations_table.setItem(row, 4, QTableWidgetItem(f"{prep:.2f}"))
+            self.operations_table.setItem(row, 5, QTableWidgetItem(f"{unit:.2f}"))
 
+        # Расцеховка
         self.workshop_table.setRowCount(len(workshops))
-        for row, (id, workshop_name, section, rm) in enumerate(workshops):
-            self.workshop_table.setItem(row, 0, QTableWidgetItem(workshop_name))
-            self.workshop_table.setItem(row, 1, QTableWidgetItem(section or ""))
-            self.workshop_table.setItem(row, 2, QTableWidgetItem(rm or ""))
+        for row, (id, w, s, r) in enumerate(workshops):
+            self.workshop_table.setItem(row, 0, QTableWidgetItem(w))
+            self.workshop_table.setItem(row, 1, QTableWidgetItem(s or ""))
+            self.workshop_table.setItem(row, 2, QTableWidgetItem(r or ""))
 
+        # Оборудование
         self.equipment_table.setRowCount(len(equipment))
-        for row, (id, name, article, note) in enumerate(equipment):
+        for row, (id, name, art, note) in enumerate(equipment):
             self.equipment_table.setItem(row, 0, QTableWidgetItem(name))
-            self.equipment_table.setItem(row, 1, QTableWidgetItem(article or ""))
+            self.equipment_table.setItem(row, 1, QTableWidgetItem(art or ""))
             self.equipment_table.setItem(row, 2, QTableWidgetItem(note or ""))
 
         self.process_data = {
@@ -1474,185 +1337,170 @@ class CAPPWindow(QMainWindow):
             'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
 
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import mm
-from reportlab.lib import colors
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.lib.enums import TA_CENTER, TA_RIGHT
-import os
+    def export_to_pdf(self):
+        if not hasattr(self, 'process_data'):
+            QMessageBox.warning(self, "Ошибка", "Сначала сгенерируйте техпроцесс!")
+            return
 
-def export_to_pdf(self):
-    if not hasattr(self, 'process_data'):
-        QMessageBox.warning(self, "Ошибка", "Сначала сгенерируйте техпроцесс!")
-        return
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить PDF",
+            f"Техпроцесс_{self.process_data['model']}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+            "PDF Files (*.pdf)"
+        )
+        if not file_path:
+            return
 
-    file_path, _ = QFileDialog.getSaveFileName(
-        self, "Сохранить PDF",
-        f"Техпроцесс_{self.process_data['model']}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-        "PDF Files (*.pdf)"
-    )
-    if not file_path:
-        return
+        try:
+            # Шрифт
+            font_dir = os.path.join(os.path.dirname(__file__), 'fonts')
+            font_path = os.path.join(font_dir, 'DejaVuSans.ttf')
+            if not os.path.exists(font_path):
+                font_path = os.path.join(os.getcwd(), 'DejaVuSans.ttf')
+            if os.path.exists(font_path):
+                pdfmetrics.registerFont(TTFont('DejaVu', font_path))
+                font_name = 'DejaVu'
+            else:
+                font_name = 'Helvetica'
+                print("Шрифт DejaVu не найден, используется Helvetica")
 
-    try:
-        # --- Регистрация шрифта ---
-        font_path = os.path.join(os.path.dirname(__file__), 'fonts', 'DejaVuSans.ttf')
-        if not os.path.exists(font_path):
-            font_path = os.path.join(os.getcwd(), 'DejaVuSans.ttf')
-        if os.path.exists(font_path):
-            pdfmetrics.registerFont(TTFont('DejaVu', font_path))
-            font_name = 'DejaVu'
-        else:
-            font_name = 'Helvetica'
-            print("Шрифт DejaVu не найден, используется Helvetica")
+            # Стили
+            styles = getSampleStyleSheet()
+            styles.add(ParagraphStyle(name='TitleCenter', fontName=font_name, fontSize=16, alignment=TA_CENTER, spaceAfter=20))
+            styles.add(ParagraphStyle(name='Header', fontName=font_name, fontSize=12, leading=14, spaceAfter=8))
+            styles.add(ParagraphStyle(name='Footer', fontName=font_name, fontSize=9, alignment=TA_RIGHT))
 
-        # --- Стили ---
-        styles = getSampleStyleSheet()
-        styles.add(ParagraphStyle(name='TitleCenter', fontName=font_name, fontSize=16, alignment=TA_CENTER, spaceAfter=20))
-        styles.add(ParagraphStyle(name='Header', fontName=font_name, fontSize=12, leading=14, spaceAfter=8))
-        styles.add(ParagraphStyle(name='NormalCenter', fontName=font_name, fontSize=10, alignment=TA_CENTER))
-        styles.add(ParagraphStyle(name='Footer', fontName=font_name, fontSize=9, alignment=TA_RIGHT))
+            doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm, leftMargin=15*mm, rightMargin=15*mm)
+            story = []
 
-        doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm, leftMargin=15*mm, rightMargin=15*mm)
-        story = []
+            # Заголовок
+            story.append(Paragraph("ТЕХНОЛОГИЧЕСКИЙ ПРОЦЕСС", styles['TitleCenter']))
+            story.append(Paragraph(f"Модель: <b>{self.process_data['model']}</b>", styles['TitleCenter']))
+            story.append(Spacer(1, 10*mm))
 
-        # --- Заголовок ---
-        story.append(Paragraph(f"ТЕХНОЛОГИЧЕСКИЙ ПРОЦЕСС", styles['TitleCenter']))
-        story.append(Paragraph(f"Модель: <b>{self.process_data['model']}</b>", styles['TitleCenter']))
-        story.append(Spacer(1, 10*mm))
+            # Реквизиты
+            details = self.process_data['document_details']
+            if details:
+                data = [["Параметр", "Значение"]]
+                for _, org, prod, doc, dev, check in details:
+                    data += [
+                        ["Организация", org],
+                        ["Обозначение изделия", prod or "—"],
+                        ["Обозначение документа", doc or "—"],
+                        ["Разработал", dev or "—"],
+                        ["Проверил", check or "—"]
+                    ]
+                table = Table(data, colWidths=[50*mm, 120*mm])
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2E7D32')),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                    ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                    ('FONTNAME', (0,0), (-1,0), font_name),
+                    ('FONTSIZE', (0,0), (-1,0), 11),
+                    ('FONTNAME', (0,1), (-1,-1), font_name),
+                    ('FONTSIZE', (0,1), (-1,-1), 10),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                    ('LEFTPADDING', (0,0), (-1,-1), 3),
+                    ('TOPPADDING', (0,0), (-1,-1), 3),
+                ]))
+                story.append(Paragraph("Реквизиты документа", styles['Header']))
+                story.append(table)
+                story.append(Spacer(1, 8*mm))
 
-        # --- Реквизиты ---
-        details = self.process_data['document_details']
-        if details:
-            data = [["Параметр", "Значение"]]
-            for _, org, prod_code, doc_code, dev_by, check_by in details:
-                data.append(["Организация", org])
-                data.append(["Обозначение изделия", prod_code or "—"])
-                data.append(["Обозначение документа", doc_code or "—"])
-                data.append(["Разработал", dev_by or "—"])
-                data.append(["Проверил", check_by or "—"])
-            table = Table(data, colWidths=[50*mm, 120*mm])
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2E7D32')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-                ('FONTNAME', (0,0), (-1,0), font_name),
-                ('FONTSIZE', (0,0), (-1,0), 11),
-                ('FONTNAME', (0,1), (-1,-1), font_name),
-                ('FONTSIZE', (0,1), (-1,-1), 10),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-                ('LEFTPADDING', (0,0), (-1,-1), 3),
-                ('TOPPADDING', (0,0), (-1,-1), 3),
-            ]))
-            story.append(Paragraph("Реквизиты документа", styles['Header']))
-            story.append(table)
-            story.append(Spacer(1, 8*mm))
+            # Спецификация
+            parts = self.process_data['parts']
+            if parts:
+                data = [["№", "Номенклатура", "Код", "Кол-во"]]
+                for i, (_, name, code, qty) in enumerate(parts, 1):
+                    data.append([str(i), name, code or "—", str(qty)])
+                table = Table(data, colWidths=[15*mm, 80*mm, 40*mm, 25*mm])
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4CAF50')),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('FONTNAME', (0,0), (-1,0), font_name),
+                    ('FONTSIZE', (0,0), (-1,0), 11),
+                    ('FONTNAME', (0,1), (-1,-1), font_name),
+                    ('FONTSIZE', (0,1), (-1,-1), 10),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ]))
+                story.append(Paragraph("Спецификация", styles['Header']))
+                story.append(table)
+                story.append(Spacer(1, 8*mm))
 
-        # --- Спецификация ---
-        parts = self.process_data['parts']
-        if parts:
-            data = [["№", "Номенклатура", "Код", "Кол-во"]]
-            for i, (_, name, code, qty) in enumerate(parts, 1):
-                data.append([str(i), name, code or "—", str(qty)])
-            col_widths = [15*mm, 80*mm, 40*mm, 25*mm]
-            table = Table(data, colWidths=col_widths)
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#4CAF50')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-                ('FONTNAME', (0,0), (-1,0), font_name),
-                ('FONTSIZE', (0,0), (-1,0), 11),
-                ('FONTNAME', (0,1), (-1,-1), font_name),
-                ('FONTSIZE', (0,1), (-1,-1), 10),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-                ('LEFTPADDING', (0,0), (-1,-1), 3),
-                ('TOPPADDING', (0,0), (-1,-1), 3),
-            ]))
-            story.append(Paragraph("Спецификация", styles['Header']))
-            story.append(table)
-            story.append(Spacer(1, 8*mm))
+            # Операции
+            operations = self.process_data['operations']
+            if operations:
+                data = [["№", "Код", "Наименование", "Оборудование", "Tподг, ч", "Tшт, мин"]]
+                for i, (_, number, code, name, _, equip, _, prep, unit) in enumerate(operations, 1):
+                    data.append([number or str(i), code or "—", name, equip or "—", f"{prep:.2f}", f"{unit:.2f}"])
+                table = Table(data, colWidths=[15*mm, 25*mm, 70*mm, 40*mm, 20*mm, 20*mm])
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2196F3')),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                    ('ALIGN', (0,0), (3,-1), 'CENTER'),
+                    ('ALIGN', (4,0), (-1,-1), 'CENTER'),
+                    ('FONTNAME', (0,0), (-1,0), font_name),
+                    ('FONTSIZE', (0,0), (-1,0), 11),
+                    ('FONTNAME', (0,1), (-1,-1), font_name),
+                    ('FONTSIZE', (0,1), (-1,-1), 10),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ]))
+                story.append(Paragraph("Операции", styles['Header']))
+                story.append(table)
+                story.append(Spacer(1, 8*mm))
 
-        # --- Операции ---
-        operations = self.process_data['operations']
-        if operations:
-            data = [["№", "Код", "Наименование", "Оборудование"]]
-            for i, (_, number, code, name, _, equip, _, _, _) in enumerate(operations, 1):
-                data.append([number or str(i), code or "—", name, equip or "—"])
-            col_widths = [20*mm, 30*mm, 80*mm, 50*mm]
-            table = Table(data, colWidths=col_widths)
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2196F3')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-                ('ALIGN', (0,0), (2,-1), 'CENTER'),
-                ('ALIGN', (3,0), (-1,-1), 'LEFT'),
-                ('FONTNAME', (0,0), (-1,0), font_name),
-                ('FONTSIZE', (0,0), (-1,0), 11),
-                ('FONTNAME', (0,1), (-1,-1), font_name),
-                ('FONTSIZE', (0,1), (-1,-1), 10),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-                ('LEFTPADDING', (0,0), (-1,-1), 3),
-                ('TOPPADDING', (0,0), (-1,-1), 3),
-            ]))
-            story.append(Paragraph("Операции", styles['Header']))
-            story.append(table)
-            story.append(Spacer(1, 8*mm))
+            # Расцеховка
+            workshops = self.process_data['workshops']
+            if workshops:
+                data = [["Цех", "Участок", "РМ"]]
+                for _, w, s, r in workshops:
+                    data.append([w, s or "—", r or "—"])
+                table = Table(data, colWidths=[60*mm, 60*mm, 60*mm])
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#FF9800')),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                    ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+                    ('FONTNAME', (0,0), (-1,0), font_name),
+                    ('FONTSIZE', (0,0), (-1,0), 11),
+                    ('FONTNAME', (0,1), (-1,-1), font_name),
+                    ('FONTSIZE', (0,1), (-1,-1), 10),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ]))
+                story.append(Paragraph("Расцеховка", styles['Header']))
+                story.append(table)
+                story.append(Spacer(1, 8*mm))
 
-        # --- Расцеховка ---
-        workshops = self.process_data['workshops']
-        if workshops:
-            data = [["Цех", "Участок", "РМ"]]
-            for _, w, s, r in workshops:
-                data.append([w, s or "—", r or "—"])
-            table = Table(data, colWidths=[60*mm, 60*mm, 60*mm])
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#FF9800')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-                ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-                ('FONTNAME', (0,0), (-1,0), font_name),
-                ('FONTSIZE', (0,0), (-1,0), 11),
-                ('FONTNAME', (0,1), (-1,-1), font_name),
-                ('FONTSIZE', (0,1), (-1,-1), 10),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-            ]))
-            story.append(Paragraph("Расцеховка", styles['Header']))
-            story.append(table)
-            story.append(Spacer(1, 8*mm))
+            # Оборудование
+            equipment = self.process_data['equipment']
+            if equipment:
+                data = [["Наименование", "Артикул", "Примечание"]]
+                for _, name, art, note in equipment:
+                    data.append([name, art or "—", note or "—"])
+                table = Table(data, colWidths=[70*mm, 50*mm, 60*mm])
+                table.setStyle(TableStyle([
+                    ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#9C27B0')),
+                    ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+                    ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+                    ('FONTNAME', (0,0), (-1,0), font_name),
+                    ('FONTSIZE', (0,0), (-1,0), 11),
+                    ('FONTNAME', (0,1), (-1,-1), font_name),
+                    ('FONTSIZE', (0,1), (-1,-1), 10),
+                    ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+                ]))
+                story.append(Paragraph("Оборудование", styles['Header']))
+                story.append(table)
 
-        # --- Оборудование ---
-        equipment = self.process_data['equipment']
-        if equipment:
-            data = [["Наименование", "Артикул", "Примечание"]]
-            for _, name, art, note in equipment:
-                data.append([name, art or "—", note or "—"])
-            table = Table(data, colWidths=[70*mm, 50*mm, 60*mm])
-            table.setStyle(TableStyle([
-                ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#9C27B0')),
-                ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-                ('ALIGN', (0,0), (-1,-1), 'LEFT'),
-                ('FONTNAME', (0,0), (-1,0), font_name),
-                ('FONTSIZE', (0,0), (-1,0), 11),
-                ('FONTNAME', (0,1), (-1,-1), font_name),
-                ('FONTSIZE', (0,1), (-1,-1), 10),
-                ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-            ]))
-            story.append(Paragraph("Оборудование", styles['Header']))
-            story.append(table)
+            # Подвал
+            story.append(Spacer(1, 15*mm))
+            story.append(Paragraph(f"Дата формирования: {self.process_data['timestamp']}", styles['Footer']))
 
-        # --- Подвал ---
-        story.append(Spacer(1, 15*mm))
-        story.append(Paragraph(f"Дата формирования: {self.process_data['timestamp']}", styles['Footer']))
+            doc.build(story)
+            QMessageBox.information(self, "Успех", f"PDF сохранён:\n{file_path}")
 
-        # --- Генерация ---
-        doc.build(story)
-        QMessageBox.information(self, "Успех", f"PDF сохранён:\n{file_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать PDF:\n{e}")
+            print(traceback.format_exc())
 
-    except Exception as e:
-        QMessageBox.critical(self, "Ошибка", f"Не удалось создать PDF:\n{e}")
-        print(traceback.format_exc())
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
