@@ -1351,7 +1351,7 @@ class CAPPWindow(QMainWindow):
             return
 
         try:
-            # Шрифт
+            # --- Регистрация шрифта ---
             font_dir = os.path.join(os.path.dirname(__file__), 'fonts')
             font_path = os.path.join(font_dir, 'DejaVuSans.ttf')
             if not os.path.exists(font_path):
@@ -1363,21 +1363,22 @@ class CAPPWindow(QMainWindow):
                 font_name = 'Helvetica'
                 print("Шрифт DejaVu не найден, используется Helvetica")
 
-            # Стили
+            # --- Стили ---
             styles = getSampleStyleSheet()
             styles.add(ParagraphStyle(name='TitleCenter', fontName=font_name, fontSize=16, alignment=TA_CENTER, spaceAfter=20))
             styles.add(ParagraphStyle(name='Header', fontName=font_name, fontSize=12, leading=14, spaceAfter=8))
             styles.add(ParagraphStyle(name='Footer', fontName=font_name, fontSize=9, alignment=TA_RIGHT))
 
+            # --- Создаём документ ---
             doc = SimpleDocTemplate(file_path, pagesize=A4, topMargin=15*mm, bottomMargin=15*mm, leftMargin=15*mm, rightMargin=15*mm)
             story = []
 
-            # Заголовок
+            # --- Заголовок ---
             story.append(Paragraph("ТЕХНОЛОГИЧЕСКИЙ ПРОЦЕСС", styles['TitleCenter']))
             story.append(Paragraph(f"Модель: <b>{self.process_data['model']}</b>", styles['TitleCenter']))
             story.append(Spacer(1, 10*mm))
 
-            # Реквизиты
+            # --- Реквизиты ---
             details = self.process_data['document_details']
             if details:
                 data = [["Параметр", "Значение"]]
@@ -1406,7 +1407,7 @@ class CAPPWindow(QMainWindow):
                 story.append(table)
                 story.append(Spacer(1, 8*mm))
 
-            # Спецификация
+            # --- Спецификация ---
             parts = self.process_data['parts']
             if parts:
                 data = [["№", "Номенклатура", "Код", "Кол-во"]]
@@ -1427,7 +1428,7 @@ class CAPPWindow(QMainWindow):
                 story.append(table)
                 story.append(Spacer(1, 8*mm))
 
-            # Операции
+            # --- Операции ---
             operations = self.process_data['operations']
             if operations:
                 data = [["№", "Код", "Наименование", "Оборудование", "Tподг, ч", "Tшт, мин"]]
@@ -1449,7 +1450,7 @@ class CAPPWindow(QMainWindow):
                 story.append(table)
                 story.append(Spacer(1, 8*mm))
 
-            # Расцеховка
+            # --- Расцеховка ---
             workshops = self.process_data['workshops']
             if workshops:
                 data = [["Цех", "Участок", "РМ"]]
@@ -1470,7 +1471,7 @@ class CAPPWindow(QMainWindow):
                 story.append(table)
                 story.append(Spacer(1, 8*mm))
 
-            # Оборудование
+            # --- Оборудование ---
             equipment = self.process_data['equipment']
             if equipment:
                 data = [["Наименование", "Артикул", "Примечание"]]
@@ -1490,10 +1491,11 @@ class CAPPWindow(QMainWindow):
                 story.append(Paragraph("Оборудование", styles['Header']))
                 story.append(table)
 
-            # Подвал
+            # --- Подвал ---
             story.append(Spacer(1, 15*mm))
             story.append(Paragraph(f"Дата формирования: {self.process_data['timestamp']}", styles['Footer']))
 
+            # --- Генерация PDF ---
             doc.build(story)
             QMessageBox.information(self, "Успех", f"PDF сохранён:\n{file_path}")
 
